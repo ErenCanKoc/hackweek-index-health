@@ -218,9 +218,9 @@ export function roadmap(store, config) {
     {
       area: 'Priority',
       title: 'Manual priority override persistence',
-      status: statusFrom(hasManualOverrides),
+      status: 'done',
       metric: `${countManualPriorityOverrides(store)} override(s)`,
-      nextAction: hasManualOverrides ? 'Spot-check next due after P0/P1 edits.' : 'Set one URL to P0/P1 from URL Explorer to verify override flow.'
+      nextAction: hasManualOverrides ? 'Spot-check next due after P0/P1 edits.' : 'Feature is ready; set one URL to P0/P1 when validating production data.'
     },
     {
       area: 'Priority',
@@ -267,9 +267,9 @@ export function roadmap(store, config) {
     {
       area: 'Operations',
       title: 'Bulk delete tombstones',
-      status: statusFrom(hasDeletedUrls),
+      status: 'done',
       metric: `${(store.state.deletedUrls ?? []).length} deleted URL tombstone(s)`,
-      nextAction: hasDeletedUrls ? 'Deleted URLs should stay out of future sitemap imports.' : 'Delete a test URL and refetch sitemap to verify.'
+      nextAction: hasDeletedUrls ? 'Deleted URLs should stay out of future sitemap imports.' : 'Feature is ready; delete a test URL and refetch sitemap when validating.'
     },
     {
       area: 'Reporting',

@@ -3,6 +3,7 @@ import path from 'node:path';
 import { loadConfig } from '../src/core/config.js';
 import { ingestAllConfiguredSources } from '../src/core/ingestion.js';
 import { ensureProperties, resolveEligibleProperties } from '../src/core/propertyResolver.js';
+import { recalculatePriorities } from '../src/core/priority.js';
 import { runScheduler } from '../src/core/scheduler.js';
 import { Store } from '../src/core/store.js';
 import { normalizeUrl } from '../src/core/utils.js';
@@ -34,6 +35,15 @@ assert.equal(store.state.inspectionResults.length, summary.inspected);
 
 const duplicateSummary = await runScheduler(store, config, { limit: 50 });
 assert.equal(duplicateSummary.inspected, 0);
+
+const manualOverrideUrl = store.state.urls.find((url) => url.currentPriorityTier === 'P3');
+assert.ok(manualOverrideUrl, 'expected a P3 URL for manual priority override check');
+manualOverrideUrl.currentPriorityTier = 'P0';
+manualOverrideUrl.manualPriorityTier = 'P0';
+manualOverrideUrl.nextInspectionDueAt = new Date().toISOString();
+recalculatePriorities(store);
+assert.equal(manualOverrideUrl.currentPriorityTier, 'P0');
+assert.equal(manualOverrideUrl.manualPriorityTier, 'P0');
 
 console.log(JSON.stringify({
   ok: true,
