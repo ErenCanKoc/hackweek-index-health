@@ -679,7 +679,6 @@ document.querySelector('#add-manual-url').addEventListener('click', async () => 
     })
   });
   document.querySelector('#manual-url').value = '';
-  await api('/api/actions/seed', { method: 'POST', body: JSON.stringify({ reset: false }) });
   await refresh();
 });
 

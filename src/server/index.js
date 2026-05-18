@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createContext, seedContext } from '../core/bootstrap.js';
 import { loadConfig, readJson, writeJson } from '../core/config.js';
-import { ingestConfiguredSitemaps } from '../core/ingestion.js';
+import { ingestConfiguredSitemaps, upsertUrl } from '../core/ingestion.js';
 import {
   createGoogleAuthUrl,
   disconnectGoogle,
@@ -209,11 +209,6 @@ async function readBody(request) {
   }
 }
 
-function csvEscape(value) {
-  const text = String(value ?? '');
-  return /[",\n\r]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
-}
-
 function normalizeUrlList(values) {
   const list = Array.isArray(values) ? values : [values];
   return [...new Set(list
@@ -222,23 +217,38 @@ function normalizeUrlList(values) {
     .filter(Boolean))];
 }
 
-async function appendManualUrl(row) {
-  const filePath = path.join(process.cwd(), 'data/imports/manual-urls.csv');
-  try {
-    await fs.access(filePath);
-  } catch {
-    await fs.writeFile(filePath, 'url,category,locale,is_scaled_content,scaled_content_type,priority_tier\n');
-  }
-
-  const line = [
-    row.url,
-    row.category || 'pages',
-    row.locale || 'en',
-    row.isScaledContent ? 'true' : 'false',
-    row.scaledContentType || '',
-    row.priorityTier || 'P3'
-  ].map(csvEscape).join(',');
-  await fs.appendFile(filePath, `${line}\n`);
+function addManualUrlToStore(store, body) {
+  restoreDeletedUrl(store, body.url);
+  const record = upsertUrl(store, {
+    url: body.url,
+    category: body.category || undefined,
+    locale: body.locale || undefined,
+    currentPriorityTier: body.priorityTier || undefined,
+    isScaledContent: Boolean(body.isScaledContent),
+    scaledContentType: body.scaledContentType || null,
+    lastBusinessMetricSeenAt: nowIso(),
+    restoreIfDeleted: true
+  });
+  if (!record) return null;
+  store.upsert(
+    'urlSources',
+    (source) => source.urlId === record.id && source.sourceType === 'manual' && source.sourceIdentifier === 'dashboard',
+    {
+      urlId: record.id,
+      sourceType: 'manual',
+      sourceIdentifier: 'dashboard',
+      sourceSitemapUrl: null,
+      firstSeenAt: nowIso(),
+      lastSeenAt: nowIso(),
+      createdAt: nowIso(),
+      updatedAt: nowIso()
+    },
+    {
+      lastSeenAt: nowIso(),
+      updatedAt: nowIso()
+    }
+  );
+  return record;
 }
 
 async function reloadRuntimeConfig() {
@@ -603,10 +613,9 @@ const server = http.createServer(async (request, response) => {
         sendJson(response, 400, { error: 'url is required' });
         return;
       }
-      restoreDeletedUrl(context.store, body.url);
+      const record = addManualUrlToStore(context.store, body);
       await context.store.save();
-      await appendManualUrl(body);
-      sendJson(response, 200, { ok: true });
+      sendJson(response, 200, { ok: true, url: record });
       return;
     }
 
