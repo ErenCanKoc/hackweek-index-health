@@ -644,7 +644,10 @@ const server = http.createServer(async (request, response) => {
 
     if (pathname === '/api/actions/run-scheduler' && request.method === 'POST') {
       const body = await readBody(request);
-      const summary = await runScheduler(context.store, context.config, { limit: body.limit ?? 100 });
+      const summary = await runScheduler(context.store, context.config, {
+        limit: body.limit ?? 100,
+        force: Boolean(body.force)
+      });
       await context.store.save();
       sendJson(response, 200, { ok: true, summary });
       return;

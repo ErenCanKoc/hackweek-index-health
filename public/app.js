@@ -69,6 +69,11 @@ function kpis(items) {
   `).join('');
 }
 
+function schedulerStatus(summary) {
+  const errors = summary.errors?.length ? ` Errors ${summary.errors.length}: ${summary.errors.map((item) => item.error).join(' | ')}` : '';
+  return `Scheduler created ${summary.createdJobs}, inspected ${summary.inspected}, skipped ${summary.skipped}, alerts ${summary.alertsCreated}.${errors}`;
+}
+
 function inferMapping(siteUrl) {
   if (siteUrl.startsWith('sc-domain:')) {
     return { category: 'fallback', locale: '', pathPrefix: '', priorityOrder: 1 };
@@ -217,7 +222,7 @@ async function openDetail(id) {
         `))}
         <details>
           <summary>Raw JSON</summary>
-          <pre>${JSON.stringify(latest?.rawJson ?? {}, null, 2)}</pre>
+          <pre>${latest ? JSON.stringify(latest.rawJson ?? {}, null, 2) : 'No inspection result yet. Run Scheduler or Force GSC Test first.'}</pre>
         </details>
       </section>
       <section class="detail-section">
@@ -439,8 +444,15 @@ document.querySelector('#seed-button').addEventListener('click', async () => {
 document.querySelector('#scheduler-button').addEventListener('click', async () => {
   setStatus('Running scheduler...');
   const result = await api('/api/actions/run-scheduler', { method: 'POST', body: JSON.stringify({ limit: 100 }) });
-  setStatus(`Scheduler inspected ${result.summary.inspected}, skipped ${result.summary.skipped}, alerts ${result.summary.alertsCreated}.`);
   await refresh();
+  setStatus(schedulerStatus(result.summary));
+});
+
+document.querySelector('#force-scheduler-button').addEventListener('click', async () => {
+  setStatus('Running forced GSC test...');
+  const result = await api('/api/actions/run-scheduler', { method: 'POST', body: JSON.stringify({ limit: 10, force: true }) });
+  await refresh();
+  setStatus(schedulerStatus(result.summary));
 });
 
 document.querySelector('#save-google-client').addEventListener('click', async () => {

@@ -16,6 +16,7 @@ const JOB_PRIORITY = {
   active_scaled_content: 3,
   first_scaled_inspection: 4,
   new_landing_daily: 5,
+  manual_force: 5,
   url_due: 6,
   monthly_coverage: 8,
   retry_needed: 9,
@@ -38,31 +39,34 @@ export function alreadyInspectedToday(store, urlRecord, now = new Date()) {
   ));
 }
 
-export function ensureJobsForDueUrls(store, policy, now = new Date()) {
+export function ensureJobsForDueUrls(store, policy, now = new Date(), options = {}) {
   const nowIsoValue = now.toISOString();
   const today = dateKey(now);
+  const force = Boolean(options.force);
   let created = 0;
 
   for (const url of store.state.urls) {
     if (!url.isActive || url.isManuallyExcluded || url.currentPriorityTier === 'Excluded') continue;
-    if (alreadyInspectedToday(store, url, now)) continue;
+    if (!force && alreadyInspectedToday(store, url, now)) continue;
 
     const dueAt = url.nextInspectionDueAt ?? url.firstSeenAt ?? nowIsoValue;
     const due = new Date(dueAt) <= now;
     const bucketDue = url.currentPriorityTier === 'P3' && monthBucketDay(url.normalizedUrl) <= Number(today.slice(-2));
-    if (!due && !bucketDue) continue;
+    if (!force && !due && !bucketDue) continue;
 
-    let reason = 'url_due';
-    if (url.currentIndexState === 'index_loss_suspected') reason = 'index_loss_suspected';
-    else if (url.isScaledContent && !url.lastInspectedAt) reason = 'first_scaled_inspection';
-    else if (url.isScaledContent) reason = 'active_scaled_content';
-    else if (url.currentPriorityTier === 'P3') reason = 'monthly_coverage';
+    let reason = force ? 'manual_force' : 'url_due';
+    if (!force) {
+      if (url.currentIndexState === 'index_loss_suspected') reason = 'index_loss_suspected';
+      else if (url.isScaledContent && !url.lastInspectedAt) reason = 'first_scaled_inspection';
+      else if (url.isScaledContent) reason = 'active_scaled_content';
+      else if (url.currentPriorityTier === 'P3') reason = 'monthly_coverage';
+    }
 
     const duplicate = store.state.inspectionJobs.some((job) => (
       job.urlId === url.id
       && job.reason === reason
       && dateKey(job.dueAt) === today
-      && ['pending', 'running', 'completed'].includes(job.status)
+      && (force ? ['pending', 'running'].includes(job.status) : ['pending', 'running', 'completed'].includes(job.status))
     ));
     if (duplicate) continue;
 
@@ -123,10 +127,11 @@ export async function runScheduler(store, config, options = {}) {
   const now = options.now ? new Date(options.now) : new Date();
   const workerId = options.workerId ?? `worker-${process.pid}`;
   const limit = options.limit ?? 100;
+  const force = Boolean(options.force);
   const provider = options.provider ?? createInspectionProvider(config.policy);
   const summary = {
     thresholds: recalculatePriorities(store),
-    createdJobs: ensureJobsForDueUrls(store, config.policy, now),
+    createdJobs: ensureJobsForDueUrls(store, config.policy, now, { force }),
     inspected: 0,
     skipped: 0,
     alertsCreated: 0,
@@ -149,7 +154,7 @@ export async function runScheduler(store, config, options = {}) {
       continue;
     }
 
-    if (alreadyInspectedToday(store, urlRecord, now)) {
+    if (!force && alreadyInspectedToday(store, urlRecord, now)) {
       job.status = 'skipped';
       job.lastError = 'already_inspected_today';
       job.updatedAt = nowIso();
