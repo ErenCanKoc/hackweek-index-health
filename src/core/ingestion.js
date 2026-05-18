@@ -27,6 +27,13 @@ function categoryFromPath(path) {
 export function upsertUrl(store, values) {
   const now = nowIso();
   const normalizedUrl = normalizeUrl(values.url);
+  const deleted = store.state.deletedUrls?.find((row) => row.normalizedUrl === normalizedUrl);
+  if (deleted && !values.restoreIfDeleted) {
+    return null;
+  }
+  if (deleted && values.restoreIfDeleted) {
+    store.state.deletedUrls = store.state.deletedUrls.filter((row) => row.normalizedUrl !== normalizedUrl);
+  }
   const urlPath = pathFromUrl(normalizedUrl);
   const createCategory = values.category ?? categoryFromPath(urlPath);
   const createLocale = values.locale ?? detectLocaleFromPath(urlPath);
@@ -145,6 +152,7 @@ export async function ingestConfiguredSitemaps(store, config, resolvePath, optio
         lastSitemapSeenAt: now,
         firstSeenAt: now
       });
+      if (!record) continue;
 
       store.upsert(
         'urlSources',
@@ -186,6 +194,7 @@ export async function ingestManualUrlCsv(store, filePath) {
       currentPriorityTier: row.priority_tier || undefined,
       lastBusinessMetricSeenAt: now
     });
+    if (!record) continue;
 
     store.upsert(
       'urlSources',
@@ -221,6 +230,7 @@ export async function ingestGscCsv(store, filePath) {
       url,
       lastBusinessMetricSeenAt: now
     });
+    if (!record) continue;
 
     store.upsert(
       'gscPerformanceMetrics',
@@ -254,6 +264,7 @@ export async function ingestBusinessWideCsv(store, filePath, metricType) {
       url,
       lastBusinessMetricSeenAt: now
     });
+    if (!record) continue;
 
     for (const [key, value] of Object.entries(row)) {
       if (key === 'path') continue;

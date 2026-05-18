@@ -231,3 +231,8 @@ export function createInspectionProvider(policy) {
   }
   throw new Error(`Unknown inspection provider: ${provider}`);
 }
+
+export async function getSearchConsoleAccessToken(policy) {
+  const provider = new GoogleUrlInspectionProvider(policy);
+  return provider.getAccessToken();
+}

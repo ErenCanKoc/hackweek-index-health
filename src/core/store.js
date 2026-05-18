@@ -7,6 +7,7 @@ const DEFAULT_STATE = {
   meta: { createdAt: null, updatedAt: null },
   counters: {},
   urls: [],
+  deletedUrls: [],
   sitemaps: [],
   properties: [],
   propertyMappings: [],

@@ -77,6 +77,13 @@ function schedulerStatus(summary) {
   return `Scheduler created ${summary.createdJobs}, inspected ${summary.inspected}, skipped ${summary.skipped}, alerts ${summary.alertsCreated}.${errors}`;
 }
 
+function propertySource(property) {
+  if (property.propertyUrl?.startsWith('sc-domain:')) return 'domain';
+  if (property.propertyUrl?.includes('/tr/') || property.propertyUrl?.includes('/de/') || property.propertyUrl?.includes('/fr/')) return 'locale';
+  if (property.propertyUrl === 'https://www.jotform.com/') return 'default';
+  return 'url-prefix';
+}
+
 function updateSelectedCount() {
   const target = document.querySelector('#selected-url-count');
   if (target) target.textContent = `${state.selectedUrlIds.size} selected`;
@@ -319,11 +326,12 @@ async function loadScaled() {
 async function loadQuota() {
   const properties = await api('/api/properties');
   const markup = table(
-    ['Property', 'Type', 'Daily Used', 'Daily Remaining', 'Monthly Used', 'Fallback', 'Auth', 'Last Success'],
+    ['Property', 'Type', 'Source', 'Daily Used', 'Daily Remaining', 'Monthly Used', 'Fallback', 'Auth', 'Last Success'],
     properties.map((property) => `
       <tr>
         <td><code>${property.propertyUrl}</code></td>
         <td>${property.propertyType}</td>
+        <td>${propertySource(property)}</td>
         <td>${property.dailyQuotaUsed}</td>
         <td>${property.dailyQuotaLimit - property.dailyQuotaUsed}</td>
         <td>${property.monthlyQuotaUsed}</td>
@@ -379,6 +387,7 @@ async function loadSettings() {
   document.querySelector('#inspection-language').value = settings.inspection.languageCode ?? 'en-US';
   document.querySelector('#fetch-child-sitemaps').checked = Boolean(settings.sources.fetchChildSitemaps);
   document.querySelector('#source-summary').innerHTML = `
+    <strong>How this works:</strong> These sitemap URLs are discovery sources only. The engine fetches them, extracts page URLs, and inspects page URLs only.<br>
     <strong>Sitemap indexes:</strong> ${(settings.sources.sitemapIndexUrls ?? []).length}<br>
     <div class="source-list">${(settings.sources.sitemapIndexUrls ?? []).map((url) => `<code>${esc(url)}</code>`).join('') || 'none'}</div>
     <strong>Child sitemaps:</strong> ${(settings.sources.childSitemapUrls ?? []).length}<br>
@@ -593,6 +602,13 @@ document.querySelector('#fetch-sitemaps').addEventListener('click', async () => 
   const result = await api('/api/actions/fetch-sitemaps', { method: 'POST', body: '{}' });
   await refresh();
   setStatus(`Fetched ${result.counts.sitemapCount} sitemaps, imported ${result.counts.urlCount} page URLs, cleaned ${result.cleanedSitemapUrlRecords} sitemap URL records. URL list is now ${result.urlsAfter}.`);
+});
+
+document.querySelector('#sync-gsc-properties').addEventListener('click', async () => {
+  setStatus('Syncing GSC properties...');
+  const result = await api('/api/actions/sync-gsc-properties', { method: 'POST', body: '{}' });
+  await refresh();
+  setStatus(`Synced ${result.sites.length} GSC properties. Imported ${result.imported.length}, skipped ${result.skipped.length}.`);
 });
 
 document.querySelector('#bulk-delete-urls-button').addEventListener('click', async () => {

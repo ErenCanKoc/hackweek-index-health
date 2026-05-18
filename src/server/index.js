@@ -19,6 +19,7 @@ import { recalculatePriorities } from '../core/priority.js';
 import { exportHealthReport, overview, scaledDashboard, urlDetail, urlExplorer } from '../core/reporting.js';
 import { runScheduler } from '../core/scheduler.js';
 import { isSitemapLikeUrl } from '../core/sitemap.js';
+import { getSearchConsoleAccessToken } from '../core/inspectionProvider.js';
 import { normalizeUrl, nowIso } from '../core/utils.js';
 
 const PORT = Number(process.env.PORT ?? 3000);
@@ -333,6 +334,27 @@ async function importGscProperties(propertyInputs) {
 
 function removeUrlData(store, urlIds) {
   const idSet = new Set(urlIds.map(Number));
+  const now = nowIso();
+  for (const url of store.state.urls.filter((row) => idSet.has(Number(row.id)))) {
+    store.upsert(
+      'deletedUrls',
+      (row) => row.normalizedUrl === url.normalizedUrl,
+      {
+        normalizedUrl: url.normalizedUrl,
+        originalUrl: url.url,
+        deletedAt: now,
+        reason: 'manual_delete',
+        createdAt: now,
+        updatedAt: now
+      },
+      {
+        originalUrl: url.url,
+        deletedAt: now,
+        reason: 'manual_delete',
+        updatedAt: now
+      }
+    );
+  }
   const before = store.state.urls.length;
   store.state.urls = store.state.urls.filter((url) => !idSet.has(Number(url.id)));
   store.state.urlSources = store.state.urlSources.filter((row) => !idSet.has(Number(row.urlId)));
@@ -346,6 +368,11 @@ function removeUrlData(store, urlIds) {
   store.state.gscPerformanceMetrics = store.state.gscPerformanceMetrics.filter((row) => !idSet.has(Number(row.urlId)));
   store.state.businessMetrics = store.state.businessMetrics.filter((row) => !idSet.has(Number(row.urlId)));
   return before - store.state.urls.length;
+}
+
+function restoreDeletedUrl(store, url) {
+  const normalized = normalizeUrl(url);
+  store.state.deletedUrls = (store.state.deletedUrls ?? []).filter((row) => row.normalizedUrl !== normalized);
 }
 
 function removeSitemapUrlRecords(store) {
@@ -409,6 +436,7 @@ async function serveStatic(response, requestPath) {
 
 async function createAppContext() {
   const context = await createContext();
+  context.store.state.deletedUrls ??= [];
   const cleaned = removeSitemapUrlRecords(context.store);
   if (cleaned) await context.store.save();
   if (context.store.state.urls.length === 0) {
@@ -575,6 +603,8 @@ const server = http.createServer(async (request, response) => {
         sendJson(response, 400, { error: 'url is required' });
         return;
       }
+      restoreDeletedUrl(context.store, body.url);
+      await context.store.save();
       await appendManualUrl(body);
       sendJson(response, 200, { ok: true });
       return;
@@ -621,6 +651,26 @@ const server = http.createServer(async (request, response) => {
         return;
       }
       sendJson(response, 200, { ok: true, ...(await importGscProperties(properties)) });
+      return;
+    }
+
+    if (pathname === '/api/actions/sync-gsc-properties' && request.method === 'POST') {
+      const token = await getSearchConsoleAccessToken(context.config.policy);
+      const siteResponse = await fetch('https://www.googleapis.com/webmasters/v3/sites', {
+        headers: { authorization: `Bearer ${token}` }
+      });
+      const siteJson = await siteResponse.json();
+      if (!siteResponse.ok) {
+        sendJson(response, 502, { error: siteJson.error?.message ?? `Search Console sites request failed with ${siteResponse.status}` });
+        return;
+      }
+      const properties = (siteJson.siteEntry ?? []).map((site) => ({
+        siteUrl: site.siteUrl,
+        propertyName: `GSC ${site.siteUrl}`,
+        fallbackAllowed: true,
+        isActive: true
+      }));
+      sendJson(response, 200, { ok: true, ...(await importGscProperties(properties)), sites: siteJson.siteEntry ?? [] });
       return;
     }
 

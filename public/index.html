@@ -171,7 +171,7 @@
 
             <section class="panel">
               <div class="panel-header">
-                <h2>Sitemap Sources</h2>
+                <h2>Sitemap Sources to Fetch URLs From</h2>
               </div>
               <div class="settings-panel">
                 <label class="check-row">
@@ -196,8 +196,10 @@
                     <textarea id="bulk-child-sitemap-urls" rows="5" placeholder="https://www.jotform.com/sitemaps/form-templates/en.adcraft.sitemap.xml&#10;https://www.jotform.com/sitemaps/blog/sitemap.xml"></textarea>
                   </label>
                 </div>
-                <button id="save-sources" class="button primary">Save Sources</button>
-                <button id="fetch-sitemaps" class="button secondary">Fetch Sitemap URLs</button>
+                <div class="actions settings-actions">
+                  <button id="save-sources" class="button primary">Save Sources</button>
+                  <button id="fetch-sitemaps" class="button secondary">Fetch Sitemap URLs</button>
+                </div>
                 <div id="source-summary" class="setting-note"></div>
               </div>
             </section>
@@ -258,6 +260,9 @@
             <section class="panel">
               <div class="panel-header">
                 <h2>Property Management</h2>
+              </div>
+              <div class="settings-panel">
+                <button id="sync-gsc-properties" class="button secondary">Sync GSC Properties</button>
               </div>
               <div id="property-management" class="table-wrap"></div>
             </section>
