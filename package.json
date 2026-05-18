@@ -16,8 +16,5 @@
   },
   "dependencies": {
     "pg": "^8.20.0"
-  },
-  "dependencies": {
-    "pg": "^8.16.3"
   }
 }
