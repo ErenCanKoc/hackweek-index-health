@@ -204,6 +204,23 @@ h2 {
   background: rgba(255, 255, 255, 0.17);
 }
 
+.panel .button.secondary,
+.detail-drawer .button.secondary,
+details .button.secondary {
+  color: var(--base);
+  background: #ffffff;
+  border-color: rgba(12, 21, 81, 0.16);
+  box-shadow: 0 8px 18px rgba(12, 21, 81, 0.08);
+}
+
+.panel .button.secondary:hover,
+.detail-drawer .button.secondary:hover,
+details .button.secondary:hover {
+  color: var(--base);
+  background: #f4f7ff;
+  border-color: rgba(49, 88, 255, 0.28);
+}
+
 .status-line {
   min-height: 38px;
   padding: 9px 13px;
