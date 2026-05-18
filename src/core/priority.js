@@ -40,6 +40,28 @@ export function recalculatePriorities(store) {
   const latestGsc = latestMetricByUrl(store.state.gscPerformanceMetrics);
 
   for (const url of store.state.urls) {
+    if (url.manualPriorityTier) {
+      url.currentPriorityTier = url.manualPriorityTier;
+      url.isManuallyExcluded = url.manualPriorityTier === 'Excluded';
+      url.isActive = url.manualPriorityTier !== 'Excluded';
+      url.updatedAt = now;
+      store.insert('prioritySnapshots', {
+        urlId: url.id,
+        calculatedAt: now,
+        priorityTier: url.manualPriorityTier,
+        organicFlag: false,
+        signupFlag: false,
+        p30Flag: false,
+        scaledFlag: Boolean(url.isScaledContent),
+        manualFlag: true,
+        combinedBusinessFlag: false,
+        scoreJson: { thresholds, manualPriorityTier: url.manualPriorityTier },
+        policyVersion: 'mvp-v1',
+        createdAt: now
+      });
+      continue;
+    }
+
     const gsc = latestGsc.get(url.id);
     const p30 = latestP30.get(url.id);
     const signup = latestSignup.get(url.id);
@@ -48,7 +70,7 @@ export function recalculatePriorities(store) {
     const p30Flag = Number(p30?.metricValue ?? 0) >= thresholds.minimumP30Count;
     const signupFlag = Number(signup?.metricValue ?? 0) >= thresholds.minimumSignupCount;
     const scaledFlag = Boolean(url.isScaledContent);
-    const manualFlag = url.currentPriorityTier === 'P1' && url.manualPriority;
+    const manualFlag = false;
     const combinedBusinessFlag = [organicFlag, p30Flag, signupFlag].filter(Boolean).length >= 2;
 
     let tier = 'P3';

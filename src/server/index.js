@@ -18,6 +18,7 @@ import { ensureProperties } from '../core/propertyResolver.js';
 import { recalculatePriorities } from '../core/priority.js';
 import { exportHealthReport, overview, scaledDashboard, urlDetail, urlExplorer } from '../core/reporting.js';
 import { runScheduler } from '../core/scheduler.js';
+import { calculateNextDueAt } from '../core/stateMachine.js';
 import { isSitemapLikeUrl } from '../core/sitemap.js';
 import { getSearchConsoleAccessToken } from '../core/inspectionProvider.js';
 import { normalizeUrl, nowIso } from '../core/utils.js';
@@ -385,6 +386,13 @@ function restoreDeletedUrl(store, url) {
   store.state.deletedUrls = (store.state.deletedUrls ?? []).filter((row) => row.normalizedUrl !== normalized);
 }
 
+function nextDueForTier(url, policy) {
+  return calculateNextDueAt(url, {
+    isSubmittedAndIndexed: ['submitted_and_indexed', 'stable_indexed'].includes(url.currentIndexState),
+    isNotIndexed: !['submitted_and_indexed', 'stable_indexed'].includes(url.currentIndexState)
+  }, policy);
+}
+
 function removeSitemapUrlRecords(store) {
   const ids = store.state.urls
     .filter((url) => isSitemapLikeUrl(url.normalizedUrl) || isSitemapLikeUrl(url.url))
@@ -745,12 +753,15 @@ const server = http.createServer(async (request, response) => {
       if (body.locale !== undefined) url.locale = body.locale ? String(body.locale).toLowerCase() : null;
       if (body.priorityTier !== undefined) {
         url.currentPriorityTier = body.priorityTier;
+        url.manualPriorityTier = body.priorityTier === 'Excluded' ? 'Excluded' : body.priorityTier;
         url.isManuallyExcluded = body.priorityTier === 'Excluded';
         url.isActive = body.priorityTier !== 'Excluded';
       }
       if (body.isScaledContent !== undefined) url.isScaledContent = Boolean(body.isScaledContent);
       if (body.scaledContentType !== undefined) url.scaledContentType = body.scaledContentType ? String(body.scaledContentType) : null;
-      url.nextInspectionDueAt = body.priorityTier === 'Excluded' ? url.nextInspectionDueAt : (url.nextInspectionDueAt ?? nowIso());
+      if (body.priorityTier !== undefined || body.isScaledContent !== undefined) {
+        url.nextInspectionDueAt = url.currentPriorityTier === 'Excluded' ? null : nextDueForTier(url, context.config.policy);
+      }
       url.updatedAt = nowIso();
       await context.store.save();
       sendJson(response, 200, { ok: true, url });
@@ -767,7 +778,9 @@ const server = http.createServer(async (request, response) => {
       url.isManuallyExcluded = true;
       url.isActive = false;
       url.currentPriorityTier = 'Excluded';
+      url.manualPriorityTier = 'Excluded';
       url.currentIndexState = 'manually_excluded';
+      url.nextInspectionDueAt = null;
       url.updatedAt = nowIso();
       await context.store.save();
       sendJson(response, 200, { ok: true, url });
@@ -783,6 +796,7 @@ const server = http.createServer(async (request, response) => {
       }
       url.isManuallyExcluded = false;
       url.isActive = true;
+      if (url.manualPriorityTier === 'Excluded') delete url.manualPriorityTier;
       url.nextInspectionDueAt = nowIso();
       url.updatedAt = nowIso();
       await context.store.save();
