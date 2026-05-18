@@ -5,6 +5,7 @@ import { ingestAllConfiguredSources } from '../src/core/ingestion.js';
 import { ensureProperties, resolveEligibleProperties } from '../src/core/propertyResolver.js';
 import { recalculatePriorities } from '../src/core/priority.js';
 import { runScheduler } from '../src/core/scheduler.js';
+import { expandSitemapSources } from '../src/core/sitemap.js';
 import { Store } from '../src/core/store.js';
 import { normalizeUrl } from '../src/core/utils.js';
 
@@ -14,6 +15,20 @@ const store = new Store(tmpStorePath);
 await store.reset();
 ensureProperties(store, config.propertyMappings, config.policy);
 await ingestAllConfiguredSources(store, config, (relativePath) => path.join(process.cwd(), relativePath));
+
+const directUrlsetSources = await expandSitemapSources(
+  { sitemapIndexUrls: ['data/imports/sample-urlset.xml'], childSitemapUrls: [] },
+  (relativePath) => path.join(process.cwd(), relativePath),
+  { includeLocal: false }
+);
+assert.deepEqual(directUrlsetSources, ['data/imports/sample-urlset.xml']);
+
+const childIndexSources = await expandSitemapSources(
+  { sitemapIndexUrls: [], childSitemapUrls: ['data/imports/sample-sitemap-index.xml'] },
+  (relativePath) => path.join(process.cwd(), relativePath),
+  { includeLocal: false }
+);
+assert.equal(childIndexSources.includes('https://www.jotform.com/sitemaps/blog/sitemap.xml'), true);
 
 assert.equal(normalizeUrl('http://WWW.JOTFORM.com/blog/test/?utm_source=x&b=2&a=1#top'), 'https://www.jotform.com/blog/test/?a=1&b=2');
 assert.equal(normalizeUrl('https://www.jotform.com/tr/'), 'https://www.jotform.com/tr/');

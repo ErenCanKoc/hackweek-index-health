@@ -107,19 +107,26 @@ export async function expandSitemapSources(sources, resolvePath, options = {}) {
   const includeLocal = options.includeLocal ?? true;
   const sitemapUrls = [];
 
+  async function expandSource(source) {
+    const text = await fetchText(source);
+    const childEntries = extractSitemapIndexEntries(text);
+    if (!childEntries.length) return [source];
+    return childEntries.map((entry) => entry.loc);
+  }
+
   if (includeLocal) {
     for (const file of sources.localSitemapIndexFiles ?? []) {
-      const text = await fetchText(resolvePath(file));
-      sitemapUrls.push(...extractSitemapIndexEntries(text).map((entry) => entry.loc));
+      sitemapUrls.push(...await expandSource(resolvePath(file)));
     }
   }
 
   for (const indexUrl of sources.sitemapIndexUrls ?? []) {
-    const text = await fetchText(indexUrl);
-    sitemapUrls.push(...extractSitemapIndexEntries(text).map((entry) => entry.loc));
+    sitemapUrls.push(...await expandSource(indexUrl));
   }
 
-  sitemapUrls.push(...(sources.childSitemapUrls ?? []));
+  for (const childSitemapUrl of sources.childSitemapUrls ?? []) {
+    sitemapUrls.push(...await expandSource(childSitemapUrl));
+  }
 
   return [...new Set(sitemapUrls)];
 }
