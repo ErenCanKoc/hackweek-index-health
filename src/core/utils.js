@@ -79,7 +79,8 @@ export function normalizeUrl(input) {
   }
 
   url.pathname = url.pathname.replace(/\/{2,}/g, '/');
-  if (url.pathname !== '/' && url.pathname.endsWith('/')) {
+  const isLocaleRoot = /^\/[a-z]{2}\/$/i.test(url.pathname);
+  if (url.pathname !== '/' && !isLocaleRoot && url.pathname.endsWith('/')) {
     url.pathname = url.pathname.slice(0, -1);
   }
 

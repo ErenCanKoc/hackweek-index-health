@@ -15,6 +15,8 @@ ensureProperties(store, config.propertyMappings, config.policy);
 await ingestAllConfiguredSources(store, config, (relativePath) => path.join(process.cwd(), relativePath));
 
 assert.equal(normalizeUrl('http://WWW.JOTFORM.com/blog/test/?utm_source=x&b=2&a=1#top'), 'https://www.jotform.com/blog/test?a=1&b=2');
+assert.equal(normalizeUrl('https://www.jotform.com/tr/'), 'https://www.jotform.com/tr/');
+assert.equal(normalizeUrl('https://www.jotform.com/blog/test/'), 'https://www.jotform.com/blog/test');
 assert.equal(store.state.urls.length > 0, true);
 
 const scaled = store.state.urls.find((url) => url.isScaledContent);
