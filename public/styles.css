@@ -488,6 +488,17 @@ details .button.secondary:hover {
   border: 1px solid rgba(255, 255, 255, 0.18);
 }
 
+.selection-count {
+  min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 10px;
+  color: rgba(255, 255, 255, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.08);
+}
+
 input,
 select,
 textarea {

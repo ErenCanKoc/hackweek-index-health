@@ -364,6 +364,14 @@ function findUrlIdsForDeletion(store, values) {
   return ids;
 }
 
+function normalizeIdList(values) {
+  const list = Array.isArray(values) ? values : [values];
+  return [...new Set(list
+    .flatMap((value) => Array.isArray(value) ? value : String(value ?? '').split(/[\n,\r\t ]+/))
+    .map((value) => Number(value))
+    .filter((value) => Number.isInteger(value) && value > 0))];
+}
+
 async function serveStatic(response, requestPath) {
   const filePath = requestPath === '/'
     ? path.join(publicDir, 'index.html')
@@ -535,7 +543,10 @@ const server = http.createServer(async (request, response) => {
 
     if (pathname === '/api/settings/delete-urls' && request.method === 'POST') {
       const body = await readBody(request);
-      const ids = findUrlIdsForDeletion(context.store, [body.urls, body.bulkUrls, body.url]);
+      const ids = [...new Set([
+        ...normalizeIdList([body.ids, body.id]),
+        ...findUrlIdsForDeletion(context.store, [body.urls, body.bulkUrls, body.url])
+      ])];
       const deleted = removeUrlData(context.store, ids);
       await context.store.save();
       sendJson(response, 200, { ok: true, matched: ids.length, deleted });

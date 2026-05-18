@@ -3,7 +3,8 @@ const state = {
   scaledTab: 'adcraft',
   gscSites: [],
   openUrlId: null,
-  openUrlDetail: null
+  openUrlDetail: null,
+  selectedUrlIds: new Set()
 };
 
 const titleMap = {
@@ -74,6 +75,30 @@ function kpis(items) {
 function schedulerStatus(summary) {
   const errors = summary.errors?.length ? ` Errors ${summary.errors.length}: ${summary.errors.map((item) => item.error).join(' | ')}` : '';
   return `Scheduler created ${summary.createdJobs}, inspected ${summary.inspected}, skipped ${summary.skipped}, alerts ${summary.alertsCreated}.${errors}`;
+}
+
+function updateSelectedCount() {
+  const target = document.querySelector('#selected-url-count');
+  if (target) target.textContent = `${state.selectedUrlIds.size} selected`;
+}
+
+async function deleteUrlIds(ids) {
+  if (!ids.length) {
+    setStatus('Select at least one URL to delete.');
+    return;
+  }
+  const ok = window.confirm(`Delete ${ids.length} URL(s) and their history from the dashboard?`);
+  if (!ok) return;
+  setStatus('Deleting selected URLs...');
+  const result = await api('/api/settings/delete-urls', {
+    method: 'POST',
+    body: JSON.stringify({ ids })
+  });
+  ids.forEach((id) => state.selectedUrlIds.delete(Number(id)));
+  state.openUrlId = null;
+  state.openUrlDetail = null;
+  await refresh();
+  setStatus(`Deleted ${result.deleted} URL(s). Matched ${result.matched}.`);
 }
 
 function inferMapping(siteUrl) {
@@ -181,9 +206,10 @@ async function loadUrls() {
     state.openUrlDetail = await api(`/api/urls/${state.openUrlId}`);
   }
   document.querySelector('#url-table').innerHTML = table(
-    ['URL', 'Tier', 'State', 'Health', 'Category', 'Locale', 'Scaled', 'Next Due', 'Actions'],
+    ['Select', 'URL', 'Tier', 'State', 'Health', 'Category', 'Locale', 'Scaled', 'Next Due', 'Actions'],
     urls.flatMap((url) => [`
       <tr>
+        <td><input type="checkbox" data-select-url="${url.id}" ${state.selectedUrlIds.has(Number(url.id)) ? 'checked' : ''}></td>
         <td><code>${url.normalizedUrl}</code></td>
         <td>${pill(url.currentPriorityTier)}</td>
         <td>${url.currentIndexState}</td>
@@ -207,7 +233,7 @@ function detailRow(detail) {
   const latest = detail.inspections[0];
   return `
     <tr class="accordion-row">
-      <td colspan="9">
+      <td colspan="10">
         <div class="detail-drawer inline-detail">
           <div class="detail-head">
             <div>
@@ -449,6 +475,14 @@ document.addEventListener('click', async (event) => {
     await api(`/api/urls/${exclude.dataset.exclude}/${action}`, { method: 'POST', body: '{}' });
     await refresh();
   }
+
+  const selectedUrl = event.target.closest('[data-select-url]');
+  if (selectedUrl) {
+    const id = Number(selectedUrl.dataset.selectUrl);
+    if (selectedUrl.checked) state.selectedUrlIds.add(id);
+    else state.selectedUrlIds.delete(id);
+    updateSelectedCount();
+  }
 });
 
 document.querySelector('#seed-button').addEventListener('click', async () => {
@@ -579,6 +613,10 @@ document.querySelector('#bulk-delete-urls-button').addEventListener('click', asy
   state.openUrlDetail = null;
   await refresh();
   setStatus(`Deleted ${result.deleted} URL(s). Matched ${result.matched}.`);
+});
+
+document.querySelector('#delete-selected-urls').addEventListener('click', async () => {
+  await deleteUrlIds([...state.selectedUrlIds]);
 });
 
 document.querySelector('#add-manual-url').addEventListener('click', async () => {
