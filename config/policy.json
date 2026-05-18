@@ -1,0 +1,50 @@
+{
+  "tiers": {
+    "P0": {
+      "frequencyDays": 1,
+      "guaranteed": true
+    },
+    "P1": {
+      "minFrequencyDays": 7,
+      "maxFrequencyDays": 10
+    },
+    "P2": {
+      "frequencyDays": 15
+    },
+    "P3": {
+      "frequencyDays": 30
+    }
+  },
+  "scaledContent": {
+    "enabledKeywords": [
+      "adcraft"
+    ],
+    "firstInspectionWithinHours": 24,
+    "expectedIndexDays": 1,
+    "delayedAlertDays": 3,
+    "escalationAlertDays": 7,
+    "dailyUntilIndexed": true,
+    "postIndexDailyConfirmationDays": 2,
+    "stableFrequencyMinDays": 15,
+    "stableFrequencyMaxDays": 20
+  },
+  "quota": {
+    "perPropertyDailyLimit": 2000,
+    "stopAtPerProperty": 1999,
+    "internalMonthlyCap": 3000000,
+    "useFallbackProperty": true
+  },
+  "alerts": {
+    "deduplication": true,
+    "resolvedNotifications": true
+  },
+  "technicalDiagnosis": {
+    "enabled": true,
+    "liveFetch": false,
+    "timeoutMs": 8000
+  },
+  "inspection": {
+    "provider": "mock",
+    "languageCode": "en-US"
+  }
+}

@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: index-health-monitoring-engine
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+      - key: INSPECTION_PROVIDER
+        value: gsc
+      - key: GSC_LANGUAGE_CODE
+        value: en-US
+      - key: APP_STATE_KEY
+        value: production
+      - key: APP_BASE_URL
+        sync: false
+      - key: GOOGLE_OAUTH_CLIENT_ID
+        sync: false
+      - key: GOOGLE_OAUTH_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_OAUTH_REDIRECT_URI
+        sync: false
+      - key: DATABASE_URL
+        sync: false

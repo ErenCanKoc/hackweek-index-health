@@ -1,0 +1,23 @@
+{
+  "name": "index-health-monitoring-engine",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Quota-aware, priority-aware, property-aware index health monitoring engine MVP.",
+  "scripts": {
+    "start": "node src/server/index.js",
+    "seed": "node scripts/seed.mjs",
+    "scheduler": "node scripts/run-scheduler.mjs",
+    "check:supabase": "node scripts/check-supabase.mjs",
+    "smoke": "node scripts/smoke-test.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "pg": "^8.20.0"
+  },
+  "dependencies": {
+    "pg": "^8.16.3"
+  }
+}

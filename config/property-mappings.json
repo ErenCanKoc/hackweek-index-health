@@ -1,0 +1,110 @@
+[
+  {
+    "propertyName": "Jotform TR",
+    "propertyUrl": "https://www.jotform.com/tr/",
+    "propertyType": "url-prefix",
+    "matchType": "prefix",
+    "pathPrefix": "/tr/",
+    "locale": "tr",
+    "category": "locale",
+    "priorityOrder": 100,
+    "fallbackAllowed": true,
+    "isActive": true
+  },
+  {
+    "propertyName": "Jotform DE",
+    "propertyUrl": "https://www.jotform.com/de/",
+    "propertyType": "url-prefix",
+    "matchType": "prefix",
+    "pathPrefix": "/de/",
+    "locale": "de",
+    "category": "locale",
+    "priorityOrder": 100,
+    "fallbackAllowed": true,
+    "isActive": true
+  },
+  {
+    "propertyName": "Jotform FR",
+    "propertyUrl": "https://www.jotform.com/fr/",
+    "propertyType": "url-prefix",
+    "matchType": "prefix",
+    "pathPrefix": "/fr/",
+    "locale": "fr",
+    "category": "locale",
+    "priorityOrder": 100,
+    "fallbackAllowed": true,
+    "isActive": true
+  },
+  {
+    "propertyName": "Jotform Blog",
+    "propertyUrl": "https://www.jotform.com/blog/",
+    "propertyType": "url-prefix",
+    "matchType": "prefix",
+    "pathPrefix": "/blog/",
+    "locale": null,
+    "category": "blog",
+    "priorityOrder": 95,
+    "fallbackAllowed": true,
+    "isActive": true
+  },
+  {
+    "propertyName": "Jotform Help",
+    "propertyUrl": "https://www.jotform.com/help/",
+    "propertyType": "url-prefix",
+    "matchType": "prefix",
+    "pathPrefix": "/help/",
+    "locale": null,
+    "category": "help",
+    "priorityOrder": 95,
+    "fallbackAllowed": true,
+    "isActive": true
+  },
+  {
+    "propertyName": "Jotform Form Templates",
+    "propertyUrl": "https://www.jotform.com/form-templates/",
+    "propertyType": "url-prefix",
+    "matchType": "prefix",
+    "pathPrefix": "/form-templates/",
+    "locale": null,
+    "category": "form-templates",
+    "priorityOrder": 95,
+    "fallbackAllowed": true,
+    "isActive": true
+  },
+  {
+    "propertyName": "Jotform App Templates",
+    "propertyUrl": "https://www.jotform.com/app-templates/",
+    "propertyType": "url-prefix",
+    "matchType": "prefix",
+    "pathPrefix": "/app-templates/",
+    "locale": null,
+    "category": "app-templates",
+    "priorityOrder": 95,
+    "fallbackAllowed": true,
+    "isActive": true
+  },
+  {
+    "propertyName": "Jotform Default WWW",
+    "propertyUrl": "https://www.jotform.com/",
+    "propertyType": "url-prefix",
+    "matchType": "prefix",
+    "pathPrefix": "/",
+    "locale": "en",
+    "category": "default_www",
+    "priorityOrder": 10,
+    "fallbackAllowed": true,
+    "isActive": true
+  },
+  {
+    "propertyName": "Jotform Domain",
+    "propertyUrl": "sc-domain:jotform.com",
+    "propertyType": "domain",
+    "matchType": "domain-fallback",
+    "pathPrefix": null,
+    "locale": null,
+    "category": "fallback",
+    "priorityOrder": 1,
+    "fallbackAllowed": false,
+    "isActive": true
+  }
+]

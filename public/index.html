@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Index Health Monitoring Engine</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <span class="brand-mark">IH</span>
+          <span>Index Health</span>
+        </div>
+        <nav class="nav" aria-label="Dashboard sections">
+          <button class="nav-item active" data-view="overview">Overview</button>
+          <button class="nav-item" data-view="urls">URL Explorer</button>
+          <button class="nav-item" data-view="scaled">Scaled Content</button>
+          <button class="nav-item" data-view="quota">Property Quota</button>
+          <button class="nav-item" data-view="alerts">Alerts</button>
+          <button class="nav-item" data-view="settings">Settings</button>
+        </nav>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div>
+            <h1 id="view-title">Overview</h1>
+            <p id="view-subtitle">Property-aware index monitoring</p>
+          </div>
+          <div class="actions">
+            <button id="seed-button" class="button secondary">Seed</button>
+            <button id="scheduler-button" class="button primary">Run Scheduler</button>
+            <a class="button secondary" href="/api/report.csv">Export CSV</a>
+          </div>
+        </header>
+
+        <section id="status-line" class="status-line">Loading dashboard...</section>
+
+        <section id="overview-view" class="view active">
+          <div id="kpi-grid" class="kpi-grid"></div>
+          <div class="split">
+            <section class="panel">
+              <div class="panel-header">
+                <h2>Category Health</h2>
+              </div>
+              <div id="category-health" class="bar-list"></div>
+            </section>
+            <section class="panel">
+              <div class="panel-header">
+                <h2>Recent Jobs</h2>
+              </div>
+              <div id="recent-jobs" class="table-wrap"></div>
+            </section>
+          </div>
+        </section>
+
+        <section id="urls-view" class="view">
+          <div class="toolbar">
+            <input id="url-search" type="search" placeholder="Search URL">
+            <select id="tier-filter">
+              <option value="">All tiers</option>
+              <option>P0</option>
+              <option>P1</option>
+              <option>P2</option>
+              <option>P3</option>
+              <option>Excluded</option>
+            </select>
+            <select id="scaled-filter">
+              <option value="">All URLs</option>
+              <option value="true">Scaled only</option>
+              <option value="false">Non-scaled</option>
+            </select>
+          </div>
+          <div id="url-table" class="table-wrap"></div>
+          <section id="url-detail" class="detail-drawer hidden"></section>
+        </section>
+
+        <section id="scaled-view" class="view">
+          <div id="scaled-kpis" class="kpi-grid compact"></div>
+          <div class="tabs" role="tablist">
+            <button class="tab active" data-scaled-tab="adcraft">Adcraft</button>
+            <button class="tab" data-scaled-tab="delayedIndexing">Delayed</button>
+            <button class="tab" data-scaled-tab="indexLost">Index Lost</button>
+            <button class="tab" data-scaled-tab="stableIndexed">Stable</button>
+            <button class="tab" data-scaled-tab="recovered">Recovered</button>
+          </div>
+          <div id="scaled-table" class="table-wrap"></div>
+        </section>
+
+        <section id="quota-view" class="view">
+          <div id="property-table" class="table-wrap"></div>
+        </section>
+
+        <section id="alerts-view" class="view">
+          <div id="alerts-table" class="table-wrap"></div>
+        </section>
+
+        <section id="settings-view" class="view">
+          <div class="settings-grid">
+            <section class="panel">
+              <div class="panel-header">
+                <h2>Google Search Console</h2>
+              </div>
+              <div class="settings-panel">
+                <div class="google-connect-card">
+                  <div>
+                    <span class="google-label">Google Search Console</span>
+                    <strong id="google-connect-title">Connect your Google account</strong>
+                    <p id="google-auth-status">Use the same Google account that has access to your Search Console properties.</p>
+                  </div>
+                  <div class="google-actions">
+                    <a id="connect-google" class="google-button" href="/auth/google/start">
+                      <span class="google-g">G</span>
+                      <span>Continue with Google</span>
+                    </a>
+                    <button id="disconnect-google" class="button secondary">Disconnect</button>
+                  </div>
+                </div>
+
+                <details id="google-advanced-setup" class="advanced-setup">
+                  <summary>OAuth setup</summary>
+                  <div class="form-grid">
+                    <label>
+                      OAuth Client ID
+                      <input id="google-client-id" type="text" placeholder="123.apps.googleusercontent.com">
+                    </label>
+                    <label>
+                      OAuth Client Secret
+                      <input id="google-client-secret" type="password" placeholder="GOCSPX-...">
+                    </label>
+                    <label class="span-2">
+                      Redirect URI
+                      <input id="google-redirect-uri" type="text">
+                    </label>
+                  </div>
+                  <div class="actions settings-actions">
+                    <button id="save-google-client" class="button secondary">Save OAuth Client</button>
+                  </div>
+                </details>
+                <div id="gsc-sites" class="table-wrap slim"></div>
+                <button id="import-gsc-properties" class="button primary">Import Selected Properties</button>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-header">
+                <h2>Inspection Provider</h2>
+              </div>
+              <div class="settings-panel">
+                <div class="form-grid">
+                  <label>
+                    Provider
+                    <select id="inspection-provider">
+                      <option value="mock">Mock</option>
+                      <option value="gsc">Google GSC API</option>
+                    </select>
+                  </label>
+                  <label>
+                    Language
+                    <input id="inspection-language" type="text" value="en-US">
+                  </label>
+                </div>
+                <button id="save-inspection-provider" class="button primary">Save Provider</button>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-header">
+                <h2>Sitemap Sources</h2>
+              </div>
+              <div class="settings-panel">
+                <label class="check-row">
+                  <input id="fetch-child-sitemaps" type="checkbox">
+                  Fetch child sitemap URLs
+                </label>
+                <div class="form-grid">
+                  <label class="span-2">
+                    Sitemap index URL
+                    <input id="sitemap-index-url" type="url" placeholder="https://www.jotform.com/sitemap.xml">
+                  </label>
+                  <label class="span-2">
+                    Direct child sitemap URL
+                    <input id="child-sitemap-url" type="url" placeholder="https://www.jotform.com/sitemaps/form-templates/en.adcraft.sitemap.xml">
+                  </label>
+                </div>
+                <button id="save-sources" class="button primary">Save Sources</button>
+                <div id="source-summary" class="setting-note"></div>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-header">
+                <h2>Add Manual URL</h2>
+              </div>
+              <div class="settings-panel">
+                <div class="form-grid">
+                  <label class="span-2">
+                    URL
+                    <input id="manual-url" type="url" placeholder="https://www.jotform.com/example">
+                  </label>
+                  <label>
+                    Category
+                    <input id="manual-category" type="text" value="pages">
+                  </label>
+                  <label>
+                    Locale
+                    <input id="manual-locale" type="text" value="en">
+                  </label>
+                  <label>
+                    Priority
+                    <select id="manual-priority">
+                      <option>P0</option>
+                      <option>P1</option>
+                      <option>P2</option>
+                      <option selected>P3</option>
+                    </select>
+                  </label>
+                  <label class="check-row">
+                    <input id="manual-scaled" type="checkbox">
+                    Scaled content
+                  </label>
+                  <label>
+                    Scaled type
+                    <input id="manual-scaled-type" type="text" placeholder="adcraft">
+                  </label>
+                </div>
+                <button id="add-manual-url" class="button primary">Add URL</button>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-header">
+                <h2>Manual Overrides</h2>
+              </div>
+              <div id="manual-overrides" class="table-wrap"></div>
+            </section>
+            <section class="panel">
+              <div class="panel-header">
+                <h2>Property Management</h2>
+              </div>
+              <div id="property-management" class="table-wrap"></div>
+            </section>
+          </div>
+        </section>
+      </main>
+    </div>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

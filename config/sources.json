@@ -1,0 +1,12 @@
+{
+  "sitemapIndexUrls": [],
+  "childSitemapUrls": [],
+  "localSitemapIndexFiles": ["data/imports/sample-sitemap-index.xml"],
+  "fetchChildSitemaps": false,
+  "useDemoUrlsWhenChildFetchIsOff": true,
+  "useDemoUrlsWhenChildFetchFails": true,
+  "manualUrlFiles": ["data/imports/manual-urls.csv"],
+  "gscCsvFiles": ["data/imports/sample-gsc.csv"],
+  "p30CsvFiles": ["data/imports/sample-p30.csv"],
+  "signupCsvFiles": ["data/imports/sample-signups.csv"]
+}
