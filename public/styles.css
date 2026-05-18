@@ -45,7 +45,8 @@ body {
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
 }
 
@@ -488,7 +489,8 @@ details .button.secondary:hover {
 }
 
 input,
-select {
+select,
+textarea {
   border: 1px solid rgba(12, 21, 81, 0.14);
   border-radius: var(--radius);
   min-height: 38px;
@@ -497,8 +499,31 @@ select {
   color: var(--ink);
 }
 
+textarea {
+  min-height: 118px;
+  resize: vertical;
+  line-height: 1.4;
+}
+
 input[type="search"] {
   min-width: min(420px, 100%);
+}
+
+.source-list {
+  display: grid;
+  gap: 5px;
+  max-height: 160px;
+  overflow: auto;
+  margin: 5px 0 10px;
+  padding: 8px;
+  border: 1px solid rgba(12, 21, 81, 0.1);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.source-list code {
+  color: var(--base);
+  overflow-wrap: anywhere;
 }
 
 .table-wrap {

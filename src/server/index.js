@@ -210,6 +210,14 @@ function csvEscape(value) {
   return /[",\n\r]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
 }
 
+function normalizeUrlList(values) {
+  const list = Array.isArray(values) ? values : [values];
+  return [...new Set(list
+    .flatMap((value) => String(value ?? '').split(/[\n,\r\t ]+/))
+    .map((value) => value.trim())
+    .filter(Boolean))];
+}
+
 async function appendManualUrl(row) {
   const filePath = path.join(process.cwd(), 'data/imports/manual-urls.csv');
   try {
@@ -422,13 +430,36 @@ const server = http.createServer(async (request, response) => {
       const sources = await readJson('config/sources.json');
       sources.sitemapIndexUrls ??= [];
       sources.childSitemapUrls ??= [];
+      const added = { sitemapIndexUrls: [], childSitemapUrls: [] };
+      const skipped = { sitemapIndexUrls: [], childSitemapUrls: [] };
 
-      if (body.sitemapIndexUrl && !sources.sitemapIndexUrls.includes(body.sitemapIndexUrl)) {
-        sources.sitemapIndexUrls.push(body.sitemapIndexUrl);
+      const sitemapIndexUrls = normalizeUrlList([
+        body.sitemapIndexUrl,
+        body.sitemapIndexUrls,
+        body.bulkSitemapIndexUrls
+      ]);
+      const childSitemapUrls = normalizeUrlList([
+        body.childSitemapUrl,
+        body.childSitemapUrls,
+        body.bulkChildSitemapUrls
+      ]);
+
+      for (const url of sitemapIndexUrls) {
+        if (sources.sitemapIndexUrls.includes(url)) skipped.sitemapIndexUrls.push(url);
+        else {
+          sources.sitemapIndexUrls.push(url);
+          added.sitemapIndexUrls.push(url);
+        }
       }
-      if (body.childSitemapUrl && !sources.childSitemapUrls.includes(body.childSitemapUrl)) {
-        sources.childSitemapUrls.push(body.childSitemapUrl);
+
+      for (const url of childSitemapUrls) {
+        if (sources.childSitemapUrls.includes(url)) skipped.childSitemapUrls.push(url);
+        else {
+          sources.childSitemapUrls.push(url);
+          added.childSitemapUrls.push(url);
+        }
       }
+
       if (typeof body.fetchChildSitemaps === 'boolean') {
         sources.fetchChildSitemaps = body.fetchChildSitemaps;
       }
@@ -441,7 +472,7 @@ const server = http.createServer(async (request, response) => {
 
       await writeJson('config/sources.json', sources);
       await reloadRuntimeConfig();
-      sendJson(response, 200, { ok: true, sources });
+      sendJson(response, 200, { ok: true, sources, added, skipped });
       return;
     }
 

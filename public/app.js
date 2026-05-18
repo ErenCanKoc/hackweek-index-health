@@ -13,6 +13,13 @@ const titleMap = {
   settings: ['Settings', 'Manual overrides and property management']
 };
 
+function splitBulkUrls(value) {
+  return [...new Set(String(value ?? '')
+    .split(/[\n,\r\t ]+/)
+    .map((item) => item.trim())
+    .filter(Boolean))];
+}
+
 async function api(path, options = {}) {
   const response = await fetch(path, {
     headers: { 'content-type': 'application/json' },
@@ -322,8 +329,10 @@ async function loadSettings() {
   document.querySelector('#inspection-language').value = settings.inspection.languageCode ?? 'en-US';
   document.querySelector('#fetch-child-sitemaps').checked = Boolean(settings.sources.fetchChildSitemaps);
   document.querySelector('#source-summary').innerHTML = `
-    <strong>Sitemap indexes:</strong> ${(settings.sources.sitemapIndexUrls ?? []).map(esc).join(', ') || 'none'}<br>
-    <strong>Child sitemaps:</strong> ${(settings.sources.childSitemapUrls ?? []).map(esc).join(', ') || 'none'}<br>
+    <strong>Sitemap indexes:</strong> ${(settings.sources.sitemapIndexUrls ?? []).length}<br>
+    <div class="source-list">${(settings.sources.sitemapIndexUrls ?? []).map((url) => `<code>${esc(url)}</code>`).join('') || 'none'}</div>
+    <strong>Child sitemaps:</strong> ${(settings.sources.childSitemapUrls ?? []).length}<br>
+    <div class="source-list">${(settings.sources.childSitemapUrls ?? []).map((url) => `<code>${esc(url)}</code>`).join('') || 'none'}</div>
     <strong>Manual URL files:</strong> ${(settings.sources.manualUrlFiles ?? []).map(esc).join(', ') || 'none'}
   `;
 
@@ -497,16 +506,23 @@ document.querySelector('#save-inspection-provider').addEventListener('click', as
 
 document.querySelector('#save-sources').addEventListener('click', async () => {
   setStatus('Saving sources...');
-  await api('/api/settings/sources', {
+  const result = await api('/api/settings/sources', {
     method: 'POST',
     body: JSON.stringify({
       sitemapIndexUrl: document.querySelector('#sitemap-index-url').value,
+      sitemapIndexUrls: splitBulkUrls(document.querySelector('#bulk-sitemap-index-urls').value),
       childSitemapUrl: document.querySelector('#child-sitemap-url').value,
+      childSitemapUrls: splitBulkUrls(document.querySelector('#bulk-child-sitemap-urls').value),
       fetchChildSitemaps: document.querySelector('#fetch-child-sitemaps').checked
     })
   });
+  const addedCount = result.added.sitemapIndexUrls.length + result.added.childSitemapUrls.length;
+  const skippedCount = result.skipped.sitemapIndexUrls.length + result.skipped.childSitemapUrls.length;
   document.querySelector('#sitemap-index-url').value = '';
   document.querySelector('#child-sitemap-url').value = '';
+  document.querySelector('#bulk-sitemap-index-urls').value = '';
+  document.querySelector('#bulk-child-sitemap-urls').value = '';
+  setStatus(`Saved sources. Added ${addedCount}, skipped ${skippedCount}.`);
   await refresh();
 });
 
