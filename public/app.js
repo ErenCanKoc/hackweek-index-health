@@ -592,7 +592,7 @@ document.querySelector('#fetch-sitemaps').addEventListener('click', async () => 
   setStatus('Fetching sitemap URLs...');
   const result = await api('/api/actions/fetch-sitemaps', { method: 'POST', body: '{}' });
   await refresh();
-  setStatus(`Fetched ${result.counts.sitemapCount} sitemaps and imported ${result.counts.urlCount} URL entries. URL list is now ${result.urlsAfter}.`);
+  setStatus(`Fetched ${result.counts.sitemapCount} sitemaps, imported ${result.counts.urlCount} page URLs, cleaned ${result.cleanedSitemapUrlRecords} sitemap URL records. URL list is now ${result.urlsAfter}.`);
 });
 
 document.querySelector('#bulk-delete-urls-button').addEventListener('click', async () => {

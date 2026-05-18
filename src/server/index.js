@@ -18,6 +18,7 @@ import { ensureProperties } from '../core/propertyResolver.js';
 import { recalculatePriorities } from '../core/priority.js';
 import { exportHealthReport, overview, scaledDashboard, urlDetail, urlExplorer } from '../core/reporting.js';
 import { runScheduler } from '../core/scheduler.js';
+import { isSitemapLikeUrl } from '../core/sitemap.js';
 import { normalizeUrl, nowIso } from '../core/utils.js';
 
 const PORT = Number(process.env.PORT ?? 3000);
@@ -347,6 +348,13 @@ function removeUrlData(store, urlIds) {
   return before - store.state.urls.length;
 }
 
+function removeSitemapUrlRecords(store) {
+  const ids = store.state.urls
+    .filter((url) => isSitemapLikeUrl(url.normalizedUrl) || isSitemapLikeUrl(url.url))
+    .map((url) => url.id);
+  return removeUrlData(store, ids);
+}
+
 function findUrlIdsForDeletion(store, values) {
   const normalized = new Set(normalizeUrlList(values).map((value) => {
     try {
@@ -401,9 +409,14 @@ async function serveStatic(response, requestPath) {
 
 async function createAppContext() {
   const context = await createContext();
+  const cleaned = removeSitemapUrlRecords(context.store);
+  if (cleaned) await context.store.save();
   if (context.store.state.urls.length === 0) {
     await seedContext({ reset: false });
-    return createContext();
+    const seededContext = await createContext();
+    const seededCleaned = removeSitemapUrlRecords(seededContext.store);
+    if (seededCleaned) await seededContext.store.save();
+    return seededContext;
   }
   return context;
 }
@@ -522,17 +535,20 @@ const server = http.createServer(async (request, response) => {
 
     if (pathname === '/api/actions/fetch-sitemaps' && request.method === 'POST') {
       const beforeUrls = context.store.state.urls.length;
+      const cleanedBefore = removeSitemapUrlRecords(context.store);
       const counts = await ingestConfiguredSitemaps(context.store, context.config, context.resolvePath, {
         includeLocal: false,
         fetchChildSitemaps: true,
         useDemoUrlsWhenChildFetchIsOff: false,
         useDemoUrlsWhenChildFetchFails: false
       });
+      const cleanedAfter = removeSitemapUrlRecords(context.store);
       const thresholds = recalculatePriorities(context.store);
       await context.store.save();
       sendJson(response, 200, {
         ok: true,
         counts,
+        cleanedSitemapUrlRecords: cleanedBefore + cleanedAfter,
         urlsBefore: beforeUrls,
         urlsAfter: context.store.state.urls.length,
         urlsAddedOrUpdated: counts.urlCount,

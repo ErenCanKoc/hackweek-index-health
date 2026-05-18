@@ -53,6 +53,17 @@ export function extractSitemapIndexEntries(xmlText) {
   }).filter((entry) => entry.loc);
 }
 
+export function isSitemapLikeUrl(value) {
+  try {
+    const path = new URL(value).pathname.toLowerCase();
+    return path.includes('/sitemaps/')
+      || /(?:^|\/)sitemap[^/]*\.xml(?:\.gz)?$/.test(path)
+      || /\/[^/]*sitemap[^/]*\.xml(?:\.gz)?$/.test(path);
+  } catch {
+    return false;
+  }
+}
+
 export function classifySitemap(sitemapUrl, policy) {
   const parsed = new URL(sitemapUrl);
   const path = parsed.pathname;

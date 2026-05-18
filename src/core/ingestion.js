@@ -4,7 +4,8 @@ import {
   expandSitemapSources,
   extractSitemapUrlEntries,
   fetchText,
-  generateDemoUrlsForSitemap
+  generateDemoUrlsForSitemap,
+  isSitemapLikeUrl
 } from './sitemap.js';
 import { compact, parseCsv, nowIso, normalizeUrl, pathFromUrl, urlFromPath } from './utils.js';
 
@@ -127,7 +128,10 @@ export async function ingestConfiguredSitemaps(store, config, resolvePath, optio
       sitemap.lastFetchStatus = `${sitemap.lastFetchStatus}+demo_generated`;
     }
 
+    const skippedSitemapLocs = urlEntries.filter((entry) => isSitemapLikeUrl(entry.loc)).length;
+    urlEntries = urlEntries.filter((entry) => !isSitemapLikeUrl(entry.loc));
     sitemap.urlCount = urlEntries.length;
+    sitemap.skippedSitemapLocCount = skippedSitemapLocs;
     urlCount += urlEntries.length;
 
     for (const entry of urlEntries) {
