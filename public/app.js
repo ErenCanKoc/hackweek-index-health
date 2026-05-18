@@ -199,7 +199,7 @@ async function loadUrls() {
           </div>
         </td>
       </tr>
-    `, Number(state.openUrlId) === Number(url.id) && state.openUrlDetail ? detailRow(state.openUrlDetail) : '']).join('')
+    `, Number(state.openUrlId) === Number(url.id) && state.openUrlDetail ? detailRow(state.openUrlDetail) : ''])
   );
 }
 
