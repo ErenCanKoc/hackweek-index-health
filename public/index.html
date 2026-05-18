@@ -265,6 +265,33 @@
 
             <section class="panel">
               <div class="panel-header">
+                <h2>Business / GSC CSV Import</h2>
+              </div>
+              <div class="settings-panel">
+                <div class="form-grid">
+                  <label>
+                    Import type
+                    <select id="csv-import-type">
+                      <option value="gsc">GSC performance: url,click,impression,avg_position</option>
+                      <option value="p30_users">P30 wide CSV: path,YYYY-MM-01...</option>
+                      <option value="signup_count">Signup wide CSV: path,YYYY-MM-01...</option>
+                    </select>
+                  </label>
+                  <label>
+                    Result
+                    <input id="csv-import-result" type="text" readonly value="No import yet">
+                  </label>
+                  <label class="span-2">
+                    CSV data
+                    <textarea id="csv-import-text" rows="8" placeholder="url,click,impression,avg_position&#10;https://www.jotform.com/example,120,4000,8.2"></textarea>
+                  </label>
+                </div>
+                <button id="import-csv" class="button primary">Import CSV</button>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-header">
                 <h2>Manual Overrides</h2>
               </div>
               <div class="settings-panel">

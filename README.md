@@ -36,6 +36,7 @@ Most setup can also be done from the dashboard:
 - Settings -> Inspection Provider: switch from `mock` to `gsc`.
 - Settings -> Sitemap Sources: add sitemap indexes or child sitemap URLs.
 - Settings -> Add Manual URL: add one-off URLs without editing CSV by hand.
+- Settings -> Business / GSC CSV Import: paste GSC, P30, or signup CSVs and recalculate priority tiers.
 
 ## Where to connect things
 
@@ -204,6 +205,20 @@ npm run scheduler
 ```
 
 ### 4. Business and GSC CSVs
+
+Fast dashboard import path:
+
+1. Open Settings.
+2. Find **Business / GSC CSV Import**.
+3. Choose one import type:
+   - `GSC performance`: `url,click,impression,avg_position`
+   - `P30 wide CSV`: `path,YYYY-MM-01,...`
+   - `Signup wide CSV`: `path,YYYY-MM-01,...`
+4. Paste the CSV content and click **Import CSV**.
+
+The dashboard import writes metrics into the app state, creates missing URLs, and recalculates priority tiers immediately.
+
+File-based import is also supported:
 
 Wire CSV files in `config/sources.json`:
 

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { loadConfig } from '../src/core/config.js';
-import { ingestAllConfiguredSources } from '../src/core/ingestion.js';
+import { ingestAllConfiguredSources, ingestBusinessWideCsvText, ingestGscCsvText } from '../src/core/ingestion.js';
 import { ensureProperties, resolveEligibleProperties } from '../src/core/propertyResolver.js';
 import { recalculatePriorities } from '../src/core/priority.js';
 import { runScheduler } from '../src/core/scheduler.js';
@@ -29,6 +29,23 @@ const childIndexSources = await expandSitemapSources(
   { includeLocal: false }
 );
 assert.equal(childIndexSources.includes('https://www.jotform.com/sitemaps/blog/sitemap.xml'), true);
+
+const gscImportRows = ingestGscCsvText(
+  store,
+  'url,click,impression,avg_position\nhttps://www.jotform.com/dashboard-csv-test/,25,400,7.2',
+  'smoke:gsc'
+);
+assert.equal(gscImportRows, 1);
+assert.ok(store.state.urls.find((url) => url.normalizedUrl === 'https://www.jotform.com/dashboard-csv-test/'));
+
+const p30ImportRows = ingestBusinessWideCsvText(
+  store,
+  'path,2026-05-01\n/dashboard-p30-test/,18',
+  'p30_users',
+  'smoke:p30'
+);
+assert.equal(p30ImportRows, 1);
+assert.ok(store.state.businessMetrics.find((metric) => metric.path === '/dashboard-p30-test/' && metric.metricType === 'p30_users'));
 
 assert.equal(normalizeUrl('http://WWW.JOTFORM.com/blog/test/?utm_source=x&b=2&a=1#top'), 'https://www.jotform.com/blog/test/?a=1&b=2');
 assert.equal(normalizeUrl('https://www.jotform.com/tr/'), 'https://www.jotform.com/tr/');

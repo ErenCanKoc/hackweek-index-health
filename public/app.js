@@ -718,6 +718,24 @@ document.querySelector('#add-manual-url').addEventListener('click', async () => 
   await refresh();
 });
 
+document.querySelector('#import-csv').addEventListener('click', async () => {
+  const importType = document.querySelector('#csv-import-type').value;
+  const csvText = document.querySelector('#csv-import-text').value;
+  if (!csvText.trim()) {
+    setStatus('Paste CSV data before importing.');
+    return;
+  }
+  setStatus('Importing CSV and recalculating priorities...');
+  const result = await api('/api/settings/csv-import', {
+    method: 'POST',
+    body: JSON.stringify({ importType, csvText })
+  });
+  document.querySelector('#csv-import-text').value = '';
+  document.querySelector('#csv-import-result').value = `${result.importedRows} rows, ${result.urlsAdded} new URLs`;
+  await refresh();
+  setStatus(`Imported ${result.importedRows} ${result.importType} row(s). URL list is now ${result.urlsAfter}.`);
+});
+
 ['#url-search', '#tier-filter', '#scaled-filter'].forEach((selector) => {
   document.querySelector(selector).addEventListener('input', () => {
     if (state.view === 'urls') loadUrls().catch((error) => setStatus(error.message));

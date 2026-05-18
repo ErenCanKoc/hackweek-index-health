@@ -221,10 +221,16 @@ export async function ingestManualUrlCsv(store, filePath) {
 
 export async function ingestGscCsv(store, filePath) {
   const text = await fs.readFile(filePath, 'utf8');
+  return ingestGscCsvText(store, text, filePath);
+}
+
+export function ingestGscCsvText(store, text, sourceName = 'dashboard') {
   const rows = parseCsv(text);
   const now = nowIso();
+  let count = 0;
 
   for (const row of rows) {
+    if (!row.url) continue;
     const url = normalizeUrl(row.url);
     const record = upsertUrl(store, {
       url,
@@ -241,24 +247,30 @@ export async function ingestGscCsv(store, filePath) {
         click: Number(row.click ?? 0),
         impression: Number(row.impression ?? 0),
         avgPosition: Number(row.avg_position ?? row.avgPosition ?? 0),
-        sourceProperty: row.property ?? null,
+        sourceProperty: row.property ?? row.source_property ?? null,
         importedAt: now,
         createdAt: now
       }
     );
+    count += 1;
   }
 
-  return rows.length;
+  return count;
 }
 
 export async function ingestBusinessWideCsv(store, filePath, metricType) {
   const text = await fs.readFile(filePath, 'utf8');
+  return ingestBusinessWideCsvText(store, text, metricType, filePath);
+}
+
+export function ingestBusinessWideCsvText(store, text, metricType, sourceName = 'dashboard') {
   const rows = parseCsv(text);
   const now = nowIso();
   let count = 0;
 
   for (const row of rows) {
-    const path = row.path;
+    const path = row.path ?? row.url;
+    if (!path) continue;
     const url = urlFromPath(path);
     const record = upsertUrl(store, {
       url,
@@ -277,7 +289,7 @@ export async function ingestBusinessWideCsv(store, filePath, metricType) {
           metricType,
           metricMonth: key,
           metricValue: Number(value || 0),
-          sourceFile: filePath,
+          sourceFile: sourceName,
           importedAt: now,
           createdAt: now
         },

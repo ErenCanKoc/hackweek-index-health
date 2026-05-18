@@ -5,7 +5,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createContext, seedContext } from '../core/bootstrap.js';
 import { loadConfig, readJson, writeJson } from '../core/config.js';
-import { ingestConfiguredSitemaps, upsertUrl } from '../core/ingestion.js';
+import {
+  ingestBusinessWideCsvText,
+  ingestConfiguredSitemaps,
+  ingestGscCsvText,
+  upsertUrl
+} from '../core/ingestion.js';
 import {
   createGoogleAuthUrl,
   disconnectGoogle,
@@ -624,6 +629,41 @@ const server = http.createServer(async (request, response) => {
       const record = addManualUrlToStore(context.store, body);
       await context.store.save();
       sendJson(response, 200, { ok: true, url: record });
+      return;
+    }
+
+    if (pathname === '/api/settings/csv-import' && request.method === 'POST') {
+      const body = await readBody(request);
+      const csvText = String(body.csvText ?? body.csv ?? '').trim();
+      const importType = String(body.importType ?? body.type ?? '').trim();
+      if (!csvText) {
+        sendJson(response, 400, { error: 'csvText is required' });
+        return;
+      }
+      if (!['gsc', 'p30_users', 'signup_count'].includes(importType)) {
+        sendJson(response, 400, { error: 'importType must be gsc, p30_users, or signup_count' });
+        return;
+      }
+
+      const beforeUrls = context.store.state.urls.length;
+      const sourceName = `dashboard:${importType}:${nowIso()}`;
+      let importedRows = 0;
+      if (importType === 'gsc') {
+        importedRows = ingestGscCsvText(context.store, csvText, sourceName);
+      } else {
+        importedRows = ingestBusinessWideCsvText(context.store, csvText, importType, sourceName);
+      }
+      const thresholds = recalculatePriorities(context.store);
+      await context.store.save();
+      sendJson(response, 200, {
+        ok: true,
+        importType,
+        importedRows,
+        urlsBefore: beforeUrls,
+        urlsAfter: context.store.state.urls.length,
+        urlsAdded: context.store.state.urls.length - beforeUrls,
+        thresholds
+      });
       return;
     }
 

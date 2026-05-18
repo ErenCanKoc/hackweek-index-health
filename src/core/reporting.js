@@ -227,7 +227,7 @@ export function roadmap(store, config) {
       title: 'Tier distribution exists',
       status: statusFrom(p1Urls.length + p2Urls.length + p3Urls.length > 0),
       metric: `P1 ${p1Urls.length} / P2 ${p2Urls.length} / P3 ${p3Urls.length}`,
-      nextAction: 'Import business/GSC CSVs for stronger P1/P2 scoring.'
+      nextAction: 'Use Settings > Business / GSC CSV Import for stronger P1/P2 scoring.'
     },
     {
       area: 'Scaled',
