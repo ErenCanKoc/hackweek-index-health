@@ -71,9 +71,16 @@ export function upsertUrl(store, values) {
   );
 }
 
-export async function ingestConfiguredSitemaps(store, config, resolvePath) {
+export async function ingestConfiguredSitemaps(store, config, resolvePath, options = {}) {
   const now = nowIso();
-  const sitemapUrls = await expandSitemapSources(config.sources, resolvePath);
+  const sources = {
+    ...config.sources,
+    fetchChildSitemaps: options.fetchChildSitemaps ?? config.sources.fetchChildSitemaps,
+    useDemoUrlsWhenChildFetchIsOff: options.useDemoUrlsWhenChildFetchIsOff ?? config.sources.useDemoUrlsWhenChildFetchIsOff,
+    useDemoUrlsWhenChildFetchFails: options.useDemoUrlsWhenChildFetchFails ?? config.sources.useDemoUrlsWhenChildFetchFails
+  };
+  const sitemapUrls = await expandSitemapSources(sources, resolvePath, { includeLocal: options.includeLocal });
+  let urlCount = 0;
 
   for (const sitemapUrl of sitemapUrls) {
     const sitemapInfo = classifySitemap(sitemapUrl, config.policy);
@@ -99,7 +106,7 @@ export async function ingestConfiguredSitemaps(store, config, resolvePath) {
     );
 
     let urlEntries = [];
-    if (config.sources.fetchChildSitemaps) {
+    if (sources.fetchChildSitemaps) {
       try {
         const sitemapXml = await fetchText(sitemapUrl);
         urlEntries = extractSitemapUrlEntries(sitemapXml);
@@ -107,7 +114,7 @@ export async function ingestConfiguredSitemaps(store, config, resolvePath) {
         sitemap.lastSuccessfulFetchAt = now;
       } catch (error) {
         sitemap.lastFetchStatus = `fetch_failed: ${error.message}`;
-        if (!config.sources.useDemoUrlsWhenChildFetchFails) {
+        if (!sources.useDemoUrlsWhenChildFetchFails) {
           throw error;
         }
       }
@@ -115,12 +122,13 @@ export async function ingestConfiguredSitemaps(store, config, resolvePath) {
       sitemap.lastFetchStatus = 'child_fetch_off';
     }
 
-    if (!urlEntries.length && (config.sources.useDemoUrlsWhenChildFetchIsOff || config.sources.useDemoUrlsWhenChildFetchFails)) {
+    if (!urlEntries.length && (sources.useDemoUrlsWhenChildFetchIsOff || sources.useDemoUrlsWhenChildFetchFails)) {
       urlEntries = generateDemoUrlsForSitemap(sitemapUrl).map((loc) => ({ loc, lastmod: null }));
       sitemap.lastFetchStatus = `${sitemap.lastFetchStatus}+demo_generated`;
     }
 
     sitemap.urlCount = urlEntries.length;
+    urlCount += urlEntries.length;
 
     for (const entry of urlEntries) {
       const record = upsertUrl(store, {
@@ -155,7 +163,7 @@ export async function ingestConfiguredSitemaps(store, config, resolvePath) {
     }
   }
 
-  return sitemapUrls.length;
+  return { sitemapCount: sitemapUrls.length, urlCount };
 }
 
 export async function ingestManualUrlCsv(store, filePath) {
@@ -271,8 +279,10 @@ export async function ingestBusinessWideCsv(store, filePath, metricType) {
 }
 
 export async function ingestAllConfiguredSources(store, config, resolvePath) {
+  const sitemapCounts = await ingestConfiguredSitemaps(store, config, resolvePath);
   const counts = {
-    sitemaps: await ingestConfiguredSitemaps(store, config, resolvePath),
+    sitemaps: sitemapCounts.sitemapCount,
+    sitemapUrls: sitemapCounts.urlCount,
     manualRows: 0,
     gscRows: 0,
     p30Rows: 0,

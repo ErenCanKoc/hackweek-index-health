@@ -92,12 +92,15 @@ export async function fetchText(source, timeoutMs = 15000) {
   return fs.readFile(source, 'utf8');
 }
 
-export async function expandSitemapSources(sources, resolvePath) {
+export async function expandSitemapSources(sources, resolvePath, options = {}) {
+  const includeLocal = options.includeLocal ?? true;
   const sitemapUrls = [];
 
-  for (const file of sources.localSitemapIndexFiles ?? []) {
-    const text = await fetchText(resolvePath(file));
-    sitemapUrls.push(...extractSitemapIndexEntries(text).map((entry) => entry.loc));
+  if (includeLocal) {
+    for (const file of sources.localSitemapIndexFiles ?? []) {
+      const text = await fetchText(resolvePath(file));
+      sitemapUrls.push(...extractSitemapIndexEntries(text).map((entry) => entry.loc));
+    }
   }
 
   for (const indexUrl of sources.sitemapIndexUrls ?? []) {

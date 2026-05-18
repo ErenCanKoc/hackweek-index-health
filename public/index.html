@@ -195,6 +195,7 @@
                   </label>
                 </div>
                 <button id="save-sources" class="button primary">Save Sources</button>
+                <button id="fetch-sitemaps" class="button secondary">Fetch Sitemap URLs</button>
                 <div id="source-summary" class="setting-note"></div>
               </div>
             </section>
@@ -242,6 +243,13 @@
             <section class="panel">
               <div class="panel-header">
                 <h2>Manual Overrides</h2>
+              </div>
+              <div class="settings-panel">
+                <label>
+                  Bulk delete URLs
+                  <textarea id="bulk-delete-urls" rows="5" placeholder="https://www.jotform.com/example-page&#10;https://www.jotform.com/another-page"></textarea>
+                </label>
+                <button id="bulk-delete-urls-button" class="button secondary">Delete URLs</button>
               </div>
               <div id="manual-overrides" class="table-wrap"></div>
             </section>

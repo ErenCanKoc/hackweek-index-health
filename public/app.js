@@ -1,7 +1,9 @@
 const state = {
   view: 'overview',
   scaledTab: 'adcraft',
-  gscSites: []
+  gscSites: [],
+  openUrlId: null,
+  openUrlDetail: null
 };
 
 const titleMap = {
@@ -175,9 +177,12 @@ async function loadUrls() {
   if (tier) params.set('priorityTier', tier);
   if (scaled) params.set('scaled', scaled);
   const urls = await api(`/api/urls?${params}`);
+  if (state.openUrlId && !state.openUrlDetail) {
+    state.openUrlDetail = await api(`/api/urls/${state.openUrlId}`);
+  }
   document.querySelector('#url-table').innerHTML = table(
     ['URL', 'Tier', 'State', 'Health', 'Category', 'Locale', 'Scaled', 'Next Due', 'Actions'],
-    urls.map((url) => `
+    urls.flatMap((url) => [`
       <tr>
         <td><code>${url.normalizedUrl}</code></td>
         <td>${pill(url.currentPriorityTier)}</td>
@@ -189,60 +194,73 @@ async function loadUrls() {
         <td>${fmtDate(url.nextInspectionDueAt)}</td>
         <td>
           <div class="row-actions">
-            <button class="small-button" data-detail="${url.id}">Open</button>
+            <button class="small-button" data-detail="${url.id}">${Number(state.openUrlId) === Number(url.id) ? 'Close' : 'Open'}</button>
             <button class="small-button" data-exclude="${url.id}">${url.isManuallyExcluded ? 'Include' : 'Exclude'}</button>
           </div>
         </td>
       </tr>
-    `)
+    `, Number(state.openUrlId) === Number(url.id) && state.openUrlDetail ? detailRow(state.openUrlDetail) : '']).join('')
   );
 }
 
-async function openDetail(id) {
-  const detail = await api(`/api/urls/${id}`);
+function detailRow(detail) {
   const latest = detail.inspections[0];
-  const drawer = document.querySelector('#url-detail');
-  drawer.classList.remove('hidden');
-  drawer.innerHTML = `
-    <div class="detail-head">
-      <div>
-        <h2>${detail.url.normalizedUrl}</h2>
-        <p>${detail.url.category} · ${detail.url.locale ?? 'default'} · ${detail.url.currentIndexState}</p>
-      </div>
-      <button class="button secondary" data-close-detail>Close</button>
-    </div>
-    <div class="detail-body">
-      <section class="detail-section">
-        <h2>Inspection Timeline</h2>
-        ${table(['When', 'Coverage', 'Property'], detail.inspections.map((item) => `
-          <tr>
-            <td>${fmtDate(item.inspectedAt)}</td>
-            <td>${item.coverageState}</td>
-            <td>${item.propertyId}</td>
-          </tr>
-        `))}
-        <details>
-          <summary>Raw JSON</summary>
-          <pre>${latest ? JSON.stringify(latest.rawJson ?? {}, null, 2) : 'No inspection result yet. Run Scheduler or Force GSC Test first.'}</pre>
-        </details>
-      </section>
-      <section class="detail-section">
-        <h2>Diagnosis and Alerts</h2>
-        ${table(['Type', 'Severity', 'Status', 'Action'], detail.alerts.map((alert) => `
-          <tr>
-            <td>${alert.alertType}</td>
-            <td>${pill(alert.severity)}</td>
-            <td>${alert.status}</td>
-            <td>${alert.recommendedAction ?? '-'}</td>
-          </tr>
-        `))}
-        <details open>
-          <summary>Technical diagnosis</summary>
-          <pre>${JSON.stringify(detail.technicalChecks[0] ?? {}, null, 2)}</pre>
-        </details>
-      </section>
-    </div>
+  return `
+    <tr class="accordion-row">
+      <td colspan="9">
+        <div class="detail-drawer inline-detail">
+          <div class="detail-head">
+            <div>
+              <h2>${detail.url.normalizedUrl}</h2>
+              <p>${detail.url.category} · ${detail.url.locale ?? 'default'} · ${detail.url.currentIndexState}</p>
+            </div>
+          </div>
+          <div class="detail-body">
+            <section class="detail-section">
+              <h2>Inspection Timeline</h2>
+              ${table(['When', 'Coverage', 'Property'], detail.inspections.map((item) => `
+                <tr>
+                  <td>${fmtDate(item.inspectedAt)}</td>
+                  <td>${item.coverageState}</td>
+                  <td>${item.propertyId}</td>
+                </tr>
+              `))}
+              <details>
+                <summary>Raw JSON</summary>
+                <pre>${latest ? JSON.stringify(latest.rawJson ?? {}, null, 2) : 'No inspection result yet. Run Scheduler or Force GSC Test first.'}</pre>
+              </details>
+            </section>
+            <section class="detail-section">
+              <h2>Diagnosis and Alerts</h2>
+              ${table(['Type', 'Severity', 'Status', 'Action'], detail.alerts.map((alert) => `
+                <tr>
+                  <td>${alert.alertType}</td>
+                  <td>${pill(alert.severity)}</td>
+                  <td>${alert.status}</td>
+                  <td>${alert.recommendedAction ?? '-'}</td>
+                </tr>
+              `))}
+              <details open>
+                <summary>Technical diagnosis</summary>
+                <pre>${JSON.stringify(detail.technicalChecks[0] ?? {}, null, 2)}</pre>
+              </details>
+            </section>
+          </div>
+        </div>
+      </td>
+    </tr>
   `;
+}
+
+async function openDetail(id) {
+  if (Number(state.openUrlId) === Number(id)) {
+    state.openUrlId = null;
+    state.openUrlDetail = null;
+  } else {
+    state.openUrlId = Number(id);
+    state.openUrlDetail = await api(`/api/urls/${id}`);
+  }
+  await loadUrls();
 }
 
 async function loadScaled() {
@@ -424,9 +442,6 @@ document.addEventListener('click', async (event) => {
   const detail = event.target.closest('[data-detail]');
   if (detail) await openDetail(detail.dataset.detail);
 
-  const close = event.target.closest('[data-close-detail]');
-  if (close) document.querySelector('#url-detail').classList.add('hidden');
-
   const exclude = event.target.closest('[data-exclude]');
   if (exclude) {
     const row = await api(`/api/urls/${exclude.dataset.exclude}`);
@@ -537,6 +552,33 @@ document.querySelector('#save-sources').addEventListener('click', async () => {
   document.querySelector('#bulk-child-sitemap-urls').value = '';
   setStatus(`Saved sources. Added ${addedCount}, skipped ${skippedCount}.`);
   await refresh();
+});
+
+document.querySelector('#fetch-sitemaps').addEventListener('click', async () => {
+  setStatus('Fetching sitemap URLs...');
+  const result = await api('/api/actions/fetch-sitemaps', { method: 'POST', body: '{}' });
+  await refresh();
+  setStatus(`Fetched ${result.counts.sitemapCount} sitemaps and imported ${result.counts.urlCount} URL entries. URL list is now ${result.urlsAfter}.`);
+});
+
+document.querySelector('#bulk-delete-urls-button').addEventListener('click', async () => {
+  const urls = splitBulkUrls(document.querySelector('#bulk-delete-urls').value);
+  if (!urls.length) {
+    setStatus('Paste at least one URL to delete.');
+    return;
+  }
+  const ok = window.confirm(`Delete ${urls.length} URL(s) and their history from the dashboard?`);
+  if (!ok) return;
+  setStatus('Deleting URLs...');
+  const result = await api('/api/settings/delete-urls', {
+    method: 'POST',
+    body: JSON.stringify({ urls })
+  });
+  document.querySelector('#bulk-delete-urls').value = '';
+  state.openUrlId = null;
+  state.openUrlDetail = null;
+  await refresh();
+  setStatus(`Deleted ${result.deleted} URL(s). Matched ${result.matched}.`);
 });
 
 document.querySelector('#add-manual-url').addEventListener('click', async () => {

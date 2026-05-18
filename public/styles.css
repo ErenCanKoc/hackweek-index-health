@@ -559,6 +559,15 @@ tbody tr:hover {
   background: rgba(49, 88, 255, 0.045);
 }
 
+.accordion-row,
+.accordion-row:hover {
+  background: rgba(12, 21, 81, 0.035);
+}
+
+.accordion-row > td {
+  padding: 0 12px 14px;
+}
+
 td code {
   white-space: nowrap;
   color: var(--base-2);
@@ -631,6 +640,11 @@ td code {
 
 .detail-drawer {
   margin-top: 14px;
+}
+
+.inline-detail {
+  margin-top: 0;
+  box-shadow: 0 12px 28px rgba(12, 21, 81, 0.12);
 }
 
 .detail-head {

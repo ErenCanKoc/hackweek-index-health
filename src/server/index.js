@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createContext, seedContext } from '../core/bootstrap.js';
 import { loadConfig, readJson, writeJson } from '../core/config.js';
+import { ingestConfiguredSitemaps } from '../core/ingestion.js';
 import {
   createGoogleAuthUrl,
   disconnectGoogle,
@@ -14,9 +15,10 @@ import {
   saveOAuthClient
 } from '../core/googleAuth.js';
 import { ensureProperties } from '../core/propertyResolver.js';
+import { recalculatePriorities } from '../core/priority.js';
 import { exportHealthReport, overview, scaledDashboard, urlDetail, urlExplorer } from '../core/reporting.js';
 import { runScheduler } from '../core/scheduler.js';
-import { nowIso } from '../core/utils.js';
+import { normalizeUrl, nowIso } from '../core/utils.js';
 
 const PORT = Number(process.env.PORT ?? 3000);
 const serverDir = path.dirname(fileURLToPath(import.meta.url));
@@ -328,6 +330,40 @@ async function importGscProperties(propertyInputs) {
   return { imported, skipped, propertyMappings: mappings };
 }
 
+function removeUrlData(store, urlIds) {
+  const idSet = new Set(urlIds.map(Number));
+  const before = store.state.urls.length;
+  store.state.urls = store.state.urls.filter((url) => !idSet.has(Number(url.id)));
+  store.state.urlSources = store.state.urlSources.filter((row) => !idSet.has(Number(row.urlId)));
+  store.state.prioritySnapshots = store.state.prioritySnapshots.filter((row) => !idSet.has(Number(row.urlId)));
+  store.state.inspectionJobs = store.state.inspectionJobs.filter((row) => !idSet.has(Number(row.urlId)));
+  store.state.inspectionResults = store.state.inspectionResults.filter((row) => !idSet.has(Number(row.urlId)));
+  store.state.stateTransitions = store.state.stateTransitions.filter((row) => !idSet.has(Number(row.urlId)));
+  store.state.technicalChecks = store.state.technicalChecks.filter((row) => !idSet.has(Number(row.urlId)));
+  store.state.healthStatuses = store.state.healthStatuses.filter((row) => !idSet.has(Number(row.urlId)));
+  store.state.alerts = store.state.alerts.filter((row) => !idSet.has(Number(row.urlId)));
+  store.state.gscPerformanceMetrics = store.state.gscPerformanceMetrics.filter((row) => !idSet.has(Number(row.urlId)));
+  store.state.businessMetrics = store.state.businessMetrics.filter((row) => !idSet.has(Number(row.urlId)));
+  return before - store.state.urls.length;
+}
+
+function findUrlIdsForDeletion(store, values) {
+  const normalized = new Set(normalizeUrlList(values).map((value) => {
+    try {
+      return normalizeUrl(value);
+    } catch {
+      return value;
+    }
+  }));
+  const ids = [];
+  for (const url of store.state.urls) {
+    if (normalized.has(url.normalizedUrl) || normalized.has(url.url)) {
+      ids.push(url.id);
+    }
+  }
+  return ids;
+}
+
 async function serveStatic(response, requestPath) {
   const filePath = requestPath === '/'
     ? path.join(publicDir, 'index.html')
@@ -473,6 +509,36 @@ const server = http.createServer(async (request, response) => {
       await writeJson('config/sources.json', sources);
       await reloadRuntimeConfig();
       sendJson(response, 200, { ok: true, sources, added, skipped });
+      return;
+    }
+
+    if (pathname === '/api/actions/fetch-sitemaps' && request.method === 'POST') {
+      const beforeUrls = context.store.state.urls.length;
+      const counts = await ingestConfiguredSitemaps(context.store, context.config, context.resolvePath, {
+        includeLocal: false,
+        fetchChildSitemaps: true,
+        useDemoUrlsWhenChildFetchIsOff: false,
+        useDemoUrlsWhenChildFetchFails: false
+      });
+      const thresholds = recalculatePriorities(context.store);
+      await context.store.save();
+      sendJson(response, 200, {
+        ok: true,
+        counts,
+        urlsBefore: beforeUrls,
+        urlsAfter: context.store.state.urls.length,
+        urlsAddedOrUpdated: counts.urlCount,
+        thresholds
+      });
+      return;
+    }
+
+    if (pathname === '/api/settings/delete-urls' && request.method === 'POST') {
+      const body = await readBody(request);
+      const ids = findUrlIdsForDeletion(context.store, [body.urls, body.bulkUrls, body.url]);
+      const deleted = removeUrlData(context.store, ids);
+      await context.store.save();
+      sendJson(response, 200, { ok: true, matched: ids.length, deleted });
       return;
     }
 
