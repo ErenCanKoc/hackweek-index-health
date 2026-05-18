@@ -516,6 +516,23 @@ textarea {
   line-height: 1.4;
 }
 
+.inline-select,
+.inline-input {
+  min-height: 30px;
+  width: 100%;
+  min-width: 78px;
+  padding: 4px 7px;
+}
+
+.inline-select.wide {
+  min-width: 160px;
+}
+
+.inline-select.tiny,
+.inline-input.tiny {
+  min-width: 58px;
+}
+
 input[type="search"] {
   min-width: min(420px, 100%);
 }

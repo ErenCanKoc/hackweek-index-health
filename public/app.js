@@ -161,6 +161,12 @@ function categoryOptions(selected) {
   return values.map((value) => `<option value="${esc(value)}" ${value === selected ? 'selected' : ''}>${esc(value)}</option>`).join('');
 }
 
+function tierOptions(selected) {
+  return ['P0', 'P1', 'P2', 'P3', 'Excluded']
+    .map((value) => `<option value="${value}" ${value === selected ? 'selected' : ''}>${value}</option>`)
+    .join('');
+}
+
 async function loadOverview() {
   const [data, jobs] = await Promise.all([api('/api/overview'), api('/api/jobs')]);
   document.querySelector('#kpi-grid').innerHTML = kpis([
@@ -218,12 +224,17 @@ async function loadUrls() {
       <tr>
         <td><input type="checkbox" data-select-url="${url.id}" ${state.selectedUrlIds.has(Number(url.id)) ? 'checked' : ''}></td>
         <td><code>${url.normalizedUrl}</code></td>
-        <td>${pill(url.currentPriorityTier)}</td>
+        <td><select class="inline-select" data-url-field="priorityTier" data-url-id="${url.id}">${tierOptions(url.currentPriorityTier)}</select></td>
         <td>${url.currentIndexState}</td>
         <td>${pill(url.health?.currentSeverity ?? url.currentHealthState)}</td>
-        <td>${url.category}</td>
-        <td>${url.locale ?? '-'}</td>
-        <td>${url.isScaledContent ? 'yes' : 'no'}</td>
+        <td><select class="inline-select wide" data-url-field="category" data-url-id="${url.id}">${categoryOptions(url.category)}</select></td>
+        <td><input class="inline-input tiny" type="text" value="${esc(url.locale ?? '')}" data-url-field="locale" data-url-id="${url.id}" placeholder="-"></td>
+        <td>
+          <select class="inline-select tiny" data-url-field="isScaledContent" data-url-id="${url.id}">
+            <option value="false" ${url.isScaledContent ? '' : 'selected'}>no</option>
+            <option value="true" ${url.isScaledContent ? 'selected' : ''}>yes</option>
+          </select>
+        </td>
         <td>${fmtDate(url.nextInspectionDueAt)}</td>
         <td>
           <div class="row-actions">
@@ -492,6 +503,25 @@ document.addEventListener('click', async (event) => {
     else state.selectedUrlIds.delete(id);
     updateSelectedCount();
   }
+
+});
+
+document.addEventListener('change', async (event) => {
+  const editable = event.target.closest('[data-url-field]');
+  if (!editable) return;
+  const id = editable.dataset.urlId;
+  const field = editable.dataset.urlField;
+  const value = editable.value;
+  const payload = {};
+  if (field === 'priorityTier') payload.priorityTier = value;
+  if (field === 'category') payload.category = value;
+  if (field === 'locale') payload.locale = value || null;
+  if (field === 'isScaledContent') payload.isScaledContent = value === 'true';
+  setStatus('Updating URL labels...');
+  await api(`/api/urls/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
+  state.openUrlDetail = null;
+  await refresh();
+  setStatus('URL labels updated.');
 });
 
 document.querySelector('#seed-button').addEventListener('click', async () => {

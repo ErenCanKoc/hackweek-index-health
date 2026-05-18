@@ -720,6 +720,34 @@ const server = http.createServer(async (request, response) => {
       return;
     }
 
+    if (detailMatch && request.method === 'PATCH') {
+      const url = context.store.findById('urls', Number(detailMatch[1]));
+      if (!url) {
+        sendJson(response, 404, { error: 'URL not found' });
+        return;
+      }
+      const body = await readBody(request);
+      const allowedTiers = new Set(['P0', 'P1', 'P2', 'P3', 'Excluded']);
+      if (body.priorityTier && !allowedTiers.has(body.priorityTier)) {
+        sendJson(response, 400, { error: 'Invalid priority tier' });
+        return;
+      }
+      if (body.category !== undefined) url.category = String(body.category || 'pages');
+      if (body.locale !== undefined) url.locale = body.locale ? String(body.locale).toLowerCase() : null;
+      if (body.priorityTier !== undefined) {
+        url.currentPriorityTier = body.priorityTier;
+        url.isManuallyExcluded = body.priorityTier === 'Excluded';
+        url.isActive = body.priorityTier !== 'Excluded';
+      }
+      if (body.isScaledContent !== undefined) url.isScaledContent = Boolean(body.isScaledContent);
+      if (body.scaledContentType !== undefined) url.scaledContentType = body.scaledContentType ? String(body.scaledContentType) : null;
+      url.nextInspectionDueAt = body.priorityTier === 'Excluded' ? url.nextInspectionDueAt : (url.nextInspectionDueAt ?? nowIso());
+      url.updatedAt = nowIso();
+      await context.store.save();
+      sendJson(response, 200, { ok: true, url });
+      return;
+    }
+
     const excludeMatch = pathname.match(/^\/api\/urls\/(\d+)\/exclude$/);
     if (excludeMatch && request.method === 'POST') {
       const url = context.store.findById('urls', Number(excludeMatch[1]));
