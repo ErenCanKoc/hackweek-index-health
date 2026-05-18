@@ -1,6 +1,7 @@
 import http from 'node:http';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createContext, seedContext } from '../core/bootstrap.js';
 import { loadConfig, readJson, writeJson } from '../core/config.js';
 import {
@@ -17,7 +18,8 @@ import { runScheduler } from '../core/scheduler.js';
 import { nowIso } from '../core/utils.js';
 
 const PORT = Number(process.env.PORT ?? 3000);
-const publicDir = path.join(process.cwd(), 'public');
+const serverDir = path.dirname(fileURLToPath(import.meta.url));
+const publicDir = path.resolve(serverDir, '../../public');
 
 function publicOrigin(fallbackOrigin) {
   return (process.env.APP_BASE_URL || fallbackOrigin).replace(/\/+$/, '');
