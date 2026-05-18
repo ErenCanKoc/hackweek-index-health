@@ -45,6 +45,7 @@ For real users, deploy the app behind a stable HTTPS URL and set:
 
 ```bash
 APP_BASE_URL=https://index-health.your-domain.com
+ADMIN_PASSWORD=choose-a-long-dashboard-password
 GOOGLE_OAUTH_CLIENT_ID=your-client-id.apps.googleusercontent.com
 GOOGLE_OAUTH_CLIENT_SECRET=your-client-secret
 GOOGLE_OAUTH_REDIRECT_URI=https://index-health.your-domain.com/auth/google/callback
@@ -84,6 +85,7 @@ CREATE TABLE IF NOT EXISTS app_state (
 
 ```bash
 APP_BASE_URL=https://your-render-service.onrender.com
+ADMIN_PASSWORD=choose-a-long-dashboard-password
 GOOGLE_OAUTH_CLIENT_ID=...
 GOOGLE_OAUTH_CLIENT_SECRET=...
 GOOGLE_OAUTH_REDIRECT_URI=https://your-render-service.onrender.com/auth/google/callback
@@ -92,6 +94,8 @@ DATABASE_SSL=true
 APP_STATE_KEY=production
 INSPECTION_PROVIDER=gsc
 ```
+
+`ADMIN_PASSWORD` enables the built-in dashboard login. Without it, the app remains open for local development.
 
 8. In Google Cloud OAuth Client, add:
 

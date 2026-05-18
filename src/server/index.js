@@ -1,4 +1,5 @@
 import http from 'node:http';
+import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -20,9 +21,163 @@ import { nowIso } from '../core/utils.js';
 const PORT = Number(process.env.PORT ?? 3000);
 const serverDir = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.resolve(serverDir, '../../public');
+const SESSION_COOKIE = 'ih_session';
 
 function publicOrigin(fallbackOrigin) {
   return (process.env.APP_BASE_URL || fallbackOrigin).replace(/\/+$/, '');
+}
+
+function authPassword() {
+  return String(process.env.ADMIN_PASSWORD ?? '').trim();
+}
+
+function isAuthEnabled() {
+  return authPassword().length > 0;
+}
+
+function authSecret() {
+  return process.env.AUTH_SESSION_SECRET || process.env.SESSION_SECRET || authPassword();
+}
+
+function expectedSessionToken() {
+  return crypto
+    .createHmac('sha256', authSecret())
+    .update(`index-health:${authPassword()}`)
+    .digest('hex');
+}
+
+function safeEqual(left, right) {
+  const a = Buffer.from(String(left ?? ''));
+  const b = Buffer.from(String(right ?? ''));
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+function parseCookies(header = '') {
+  return Object.fromEntries(
+    header
+      .split(';')
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .map((part) => {
+        const index = part.indexOf('=');
+        if (index === -1) return [part, ''];
+        return [part.slice(0, index), decodeURIComponent(part.slice(index + 1))];
+      })
+  );
+}
+
+function isAuthenticated(request) {
+  if (!isAuthEnabled()) return true;
+  const cookies = parseCookies(request.headers.cookie);
+  return safeEqual(cookies[SESSION_COOKIE], expectedSessionToken());
+}
+
+function cookieOptions(request) {
+  const forwardedProto = request.headers['x-forwarded-proto'];
+  const isSecure = forwardedProto === 'https' || publicOrigin(`http://${request.headers.host}`).startsWith('https://');
+  return `HttpOnly; SameSite=Lax; Path=/; Max-Age=${60 * 60 * 24 * 14}${isSecure ? '; Secure' : ''}`;
+}
+
+function redirect(response, location, headers = {}) {
+  response.writeHead(302, { location, ...headers });
+  response.end();
+}
+
+function loginPage({ error = false } = {}) {
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Index Health Login</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --base: rgb(12, 21, 81);
+        --cyan: #10bfd3;
+      }
+      * { box-sizing: border-box; }
+      body {
+        min-height: 100vh;
+        margin: 0;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        background:
+          radial-gradient(circle at 20% 14%, rgba(49, 88, 255, 0.5), transparent 34%),
+          radial-gradient(circle at 84% 8%, rgba(16, 191, 211, 0.32), transparent 30%),
+          linear-gradient(145deg, rgb(12, 21, 81) 0%, #111858 38%, #070c2e 100%);
+        font: 300 14px/1.45 "Circular Std", "CircularXX", "Avenir Next", Inter, ui-sans-serif, system-ui, sans-serif;
+        letter-spacing: 0;
+      }
+      main {
+        width: min(420px, 100%);
+        padding: 28px;
+        border: 1px solid rgba(255, 255, 255, 0.22);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.92);
+        color: #12172f;
+        box-shadow: 0 24px 70px rgba(6, 12, 48, 0.28);
+      }
+      .mark {
+        display: grid;
+        place-items: center;
+        width: 40px;
+        height: 40px;
+        border-radius: 8px;
+        margin-bottom: 18px;
+        color: var(--base);
+        font-weight: 700;
+        background: linear-gradient(135deg, #ffffff 0%, #dce5ff 46%, #99f1ff 100%);
+      }
+      h1 { margin: 0 0 6px; font-size: 28px; font-weight: 300; color: var(--base); }
+      p { margin: 0 0 20px; color: #66708c; }
+      label { display: grid; gap: 7px; color: #66708c; font-size: 12px; }
+      input {
+        min-height: 42px;
+        border: 1px solid rgba(12, 21, 81, 0.16);
+        border-radius: 8px;
+        padding: 9px 11px;
+        color: #12172f;
+        background: #fff;
+        font: inherit;
+      }
+      button {
+        width: 100%;
+        min-height: 42px;
+        margin-top: 14px;
+        border: 1px solid rgba(255, 255, 255, 0.28);
+        border-radius: 8px;
+        color: white;
+        cursor: pointer;
+        background: linear-gradient(135deg, #2e55ff 0%, #14c1d1 100%);
+        font: inherit;
+      }
+      .error {
+        margin: 0 0 12px;
+        padding: 9px 10px;
+        border-radius: 8px;
+        color: #b4243c;
+        background: rgba(222, 67, 89, 0.12);
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="mark">IH</div>
+      <h1>Index Health</h1>
+      <p>Dashboard access is protected.</p>
+      ${error ? '<div class="error">Password is incorrect.</div>' : ''}
+      <form method="post" action="/auth/login">
+        <label>
+          Password
+          <input name="password" type="password" autocomplete="current-password" autofocus required>
+        </label>
+        <button type="submit">Sign in</button>
+      </form>
+    </main>
+  </body>
+</html>`;
 }
 
 function sendJson(response, statusCode, payload) {
@@ -40,6 +195,9 @@ async function readBody(request) {
   for await (const chunk of request) chunks.push(chunk);
   const text = Buffer.concat(chunks).toString('utf8');
   if (!text) return {};
+  if (request.headers['content-type']?.includes('application/x-www-form-urlencoded')) {
+    return Object.fromEntries(new URLSearchParams(text));
+  }
   try {
     return JSON.parse(text);
   } catch {
@@ -208,6 +366,43 @@ const server = http.createServer(async (request, response) => {
 
     if (pathname === '/api/health') {
       sendJson(response, 200, { ok: true, now: nowIso() });
+      return;
+    }
+
+    if (isAuthEnabled() && pathname === '/login') {
+      if (isAuthenticated(request)) {
+        redirect(response, '/');
+      } else {
+        sendText(response, 200, loginPage({ error: parsed.searchParams.get('error') === '1' }), 'text/html; charset=utf-8');
+      }
+      return;
+    }
+
+    if (isAuthEnabled() && pathname === '/auth/login' && request.method === 'POST') {
+      const body = await readBody(request);
+      if (safeEqual(String(body.password ?? ''), authPassword())) {
+        redirect(response, '/', {
+          'set-cookie': `${SESSION_COOKIE}=${encodeURIComponent(expectedSessionToken())}; ${cookieOptions(request)}`
+        });
+      } else {
+        redirect(response, '/login?error=1');
+      }
+      return;
+    }
+
+    if (isAuthEnabled() && pathname === '/auth/logout') {
+      redirect(response, '/login', {
+        'set-cookie': `${SESSION_COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`
+      });
+      return;
+    }
+
+    if (!isAuthenticated(request)) {
+      if (pathname.startsWith('/api/')) {
+        sendJson(response, 401, { error: 'Authentication required' });
+      } else {
+        redirect(response, '/login');
+      }
       return;
     }
 
