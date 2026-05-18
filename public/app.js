@@ -152,13 +152,14 @@ async function loadOverview() {
   }).join('');
 
   document.querySelector('#recent-jobs').innerHTML = table(
-    ['URL', 'Tier', 'Reason', 'Status', 'Updated'],
+    ['URL', 'Tier', 'Reason', 'Status', 'Last Error', 'Updated'],
     jobs.slice(0, 8).map((job) => `
       <tr>
         <td><code>${job.normalizedUrl}</code></td>
         <td>${pill(job.priorityTier)}</td>
         <td>${job.reason}</td>
         <td>${pill(job.status)}</td>
+        <td>${esc(job.lastError ?? '-')}</td>
         <td>${fmtDate(job.updatedAt)}</td>
       </tr>
     `)
@@ -450,7 +451,7 @@ document.querySelector('#scheduler-button').addEventListener('click', async () =
 
 document.querySelector('#force-scheduler-button').addEventListener('click', async () => {
   setStatus('Running forced GSC test...');
-  const result = await api('/api/actions/run-scheduler', { method: 'POST', body: JSON.stringify({ limit: 10, force: true }) });
+  const result = await api('/api/actions/run-scheduler', { method: 'POST', body: JSON.stringify({ limit: 50, force: true }) });
   await refresh();
   setStatus(schedulerStatus(result.summary));
 });
