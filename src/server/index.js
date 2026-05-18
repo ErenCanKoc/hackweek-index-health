@@ -16,7 +16,7 @@ import {
 } from '../core/googleAuth.js';
 import { ensureProperties } from '../core/propertyResolver.js';
 import { recalculatePriorities } from '../core/priority.js';
-import { exportHealthReport, overview, scaledDashboard, urlDetail, urlExplorer } from '../core/reporting.js';
+import { exportHealthReport, overview, roadmap, scaledDashboard, urlDetail, urlExplorer } from '../core/reporting.js';
 import { runScheduler } from '../core/scheduler.js';
 import { calculateNextDueAt } from '../core/stateMachine.js';
 import { isSitemapLikeUrl } from '../core/sitemap.js';
@@ -722,6 +722,11 @@ const server = http.createServer(async (request, response) => {
 
     if (pathname === '/api/overview') {
       sendJson(response, 200, overview(context.store));
+      return;
+    }
+
+    if (pathname === '/api/roadmap') {
+      sendJson(response, 200, roadmap(context.store, context.config));
       return;
     }
 

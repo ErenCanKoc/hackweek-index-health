@@ -13,6 +13,7 @@ const titleMap = {
   scaled: ['Scaled Content', 'Adcraft index journey and delayed indexing'],
   quota: ['Property Quota', 'Daily and monthly URL Inspection API usage'],
   alerts: ['Alerts', 'Active and resolved index health events'],
+  roadmap: ['Roadmap', 'MVP readiness and next implementation focus'],
   settings: ['Settings', 'Manual overrides and property management']
 };
 
@@ -374,6 +375,40 @@ async function loadAlerts() {
   );
 }
 
+async function loadRoadmap() {
+  const data = await api('/api/roadmap');
+  document.querySelector('#roadmap-kpis').innerHTML = kpis([
+    ['Done', data.summary.done, 'healthy'],
+    ['Partial', data.summary.partial, 'warning'],
+    ['Todo', data.summary.todo, 'critical'],
+    ['Total Checks', data.summary.total]
+  ]);
+
+  document.querySelector('#roadmap-focus').innerHTML = data.nextFocus.length
+    ? data.nextFocus.map((item) => `
+      <article class="roadmap-card">
+        ${pill(item.status)}
+        <strong>${esc(item.title)}</strong>
+        <span>${esc(item.metric)}</span>
+        <p>${esc(item.nextAction)}</p>
+      </article>
+    `).join('')
+    : '<div class="empty-state">MVP checklist is green. Time to polish the demo story.</div>';
+
+  document.querySelector('#roadmap-table').innerHTML = table(
+    ['Area', 'Status', 'Check', 'Metric', 'Next Action'],
+    data.items.map((item) => `
+      <tr>
+        <td>${esc(item.area)}</td>
+        <td>${pill(item.status)}</td>
+        <td>${esc(item.title)}</td>
+        <td>${esc(item.metric)}</td>
+        <td>${esc(item.nextAction)}</td>
+      </tr>
+    `)
+  );
+}
+
 async function loadSettings() {
   const [urls, settings] = await Promise.all([api('/api/urls'), api('/api/settings')]);
   const auth = settings.googleAuth;
@@ -461,6 +496,7 @@ async function refresh() {
   if (state.view === 'scaled') await loadScaled();
   if (state.view === 'quota') await loadQuota();
   if (state.view === 'alerts') await loadAlerts();
+  if (state.view === 'roadmap') await loadRoadmap();
   if (state.view === 'settings') await loadSettings();
   setStatus(`Updated ${new Date().toLocaleTimeString()}`);
 }
@@ -688,5 +724,6 @@ document.querySelector('#add-manual-url').addEventListener('click', async () => 
   });
 });
 
-if (location.hash === '#settings') setView('settings');
+const initialView = location.hash.replace('#', '');
+if (titleMap[initialView]) setView(initialView);
 else refresh().catch((error) => setStatus(error.message));

@@ -455,6 +455,42 @@ details .button.secondary:hover {
   padding: 8px 14px 14px;
 }
 
+.roadmap-list {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.roadmap-card {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid rgba(12, 21, 81, 0.1);
+  border-radius: var(--radius);
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.96), rgba(231, 248, 252, 0.78));
+}
+
+.roadmap-card strong {
+  color: var(--base);
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.roadmap-card span,
+.roadmap-card p,
+.empty-state {
+  color: var(--muted);
+}
+
+.roadmap-card p {
+  margin-top: 2px;
+}
+
+.empty-state {
+  padding: 14px;
+}
+
 .bar-row {
   display: grid;
   grid-template-columns: minmax(120px, 180px) 1fr 54px;
@@ -634,15 +670,22 @@ td code {
 
 .pill.P3,
 .pill.healthy,
-.pill.resolved {
+.pill.resolved,
+.pill.done {
   background: rgba(16, 166, 107, 0.13);
   color: #08764a;
 }
 
 .pill.Excluded,
-.pill.excluded {
+.pill.excluded,
+.pill.todo {
   background: rgba(102, 112, 140, 0.14);
   color: #4c556f;
+}
+
+.pill.partial {
+  background: rgba(191, 122, 18, 0.13);
+  color: #8d5707;
 }
 
 .tabs {

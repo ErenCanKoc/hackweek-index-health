@@ -19,6 +19,7 @@
           <button class="nav-item" data-view="scaled">Scaled Content</button>
           <button class="nav-item" data-view="quota">Property Quota</button>
           <button class="nav-item" data-view="alerts">Alerts</button>
+          <button class="nav-item" data-view="roadmap">Roadmap</button>
           <button class="nav-item" data-view="settings">Settings</button>
         </nav>
       </aside>
@@ -98,6 +99,24 @@
 
         <section id="alerts-view" class="view">
           <div id="alerts-table" class="table-wrap"></div>
+        </section>
+
+        <section id="roadmap-view" class="view">
+          <div id="roadmap-kpis" class="kpi-grid compact"></div>
+          <div class="split">
+            <section class="panel">
+              <div class="panel-header">
+                <h2>Next Focus</h2>
+              </div>
+              <div id="roadmap-focus" class="roadmap-list"></div>
+            </section>
+            <section class="panel">
+              <div class="panel-header">
+                <h2>MVP Readiness</h2>
+              </div>
+              <div id="roadmap-table" class="table-wrap"></div>
+            </section>
+          </div>
         </section>
 
         <section id="settings-view" class="view">
