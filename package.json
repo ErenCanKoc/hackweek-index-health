@@ -15,6 +15,12 @@
     "node": ">=20"
   },
   "dependencies": {
-    "pg": "^8.20.0"
+    "pg": "8.20.0"
+  },
+  "overrides": {
+    "pg-connection-string": "2.12.0"
+  },
+  "resolutions": {
+    "pg-connection-string": "2.12.0"
   }
 }
