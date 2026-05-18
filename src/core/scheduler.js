@@ -94,6 +94,21 @@ export function ensureJobsForDueUrls(store, policy, now = new Date(), options = 
 }
 
 function saveInspectionResult(store, job, property, result) {
+  const rawJson = {
+    ...(result.rawJson ?? {}),
+    _indexHealth: {
+      inspectedProperty: {
+        id: property.id,
+        propertyName: property.propertyName,
+        propertyUrl: property.propertyUrl,
+        propertyType: property.propertyType
+      },
+      jobId: job.id,
+      urlId: job.urlId,
+      normalizedUrl: job.normalizedUrl
+    }
+  };
+
   return store.insert('inspectionResults', {
     urlId: job.urlId,
     jobId: job.id,
@@ -101,7 +116,7 @@ function saveInspectionResult(store, job, property, result) {
     normalizedUrl: job.normalizedUrl,
     inspectedAt: result.inspectedAt,
     inspectionDate: dateKey(result.inspectedAt),
-    rawJson: result.rawJson,
+    rawJson,
     verdict: result.verdict,
     coverageState: result.coverageState,
     indexingState: result.indexingState,
