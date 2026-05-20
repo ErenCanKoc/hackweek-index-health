@@ -164,7 +164,23 @@ export async function ingestConfiguredSitemaps(store, config, resolvePath, optio
     useDemoUrlsWhenChildFetchFails: options.useDemoUrlsWhenChildFetchFails ?? config.sources.useDemoUrlsWhenChildFetchFails
   };
   const sitemapUrls = await expandSitemapSources(sources, resolvePath, { includeLocal: options.includeLocal });
+  const totalSitemaps = sitemapUrls.length;
   let urlCount = 0;
+  const reportProgress = (progress) => {
+    if (typeof options.onProgress !== 'function') return;
+    options.onProgress({
+      total: totalSitemaps,
+      updatedAt: nowIso(),
+      ...progress
+    });
+  };
+  reportProgress({
+    phase: 'fetching_sitemaps',
+    completed: 0,
+    success: 0,
+    failed: 0,
+    percent: totalSitemaps ? 0 : 100
+  });
   const urlIndex = new Map(store.state.urls.map((url) => [url.normalizedUrl, url]));
   const deletedIndex = new Map((store.state.deletedUrls ?? []).map((url) => [url.normalizedUrl, url]));
   const urlSourceIndex = new Map(
@@ -172,6 +188,9 @@ export async function ingestConfiguredSitemaps(store, config, resolvePath, optio
   );
 
   const fetchConcurrency = Math.max(1, Math.min(Number(options.fetchConcurrency ?? process.env.SITEMAP_FETCH_CONCURRENCY ?? 6), 20));
+  let fetchCompleted = 0;
+  let fetchSuccess = 0;
+  let fetchFailed = 0;
   const fetchedSitemaps = await mapWithConcurrency(sitemapUrls, fetchConcurrency, async (sitemapUrl) => {
     const sitemapInfo = classifySitemap(sitemapUrl, config.policy);
     let urlEntries = [];
@@ -194,6 +213,18 @@ export async function ingestConfiguredSitemaps(store, config, resolvePath, optio
       lastFetchStatus = `${lastFetchStatus}+demo_generated`;
     }
 
+    fetchCompleted += 1;
+    if (lastFetchStatus.startsWith('success')) fetchSuccess += 1;
+    if (lastFetchStatus.startsWith('fetch_failed')) fetchFailed += 1;
+    reportProgress({
+      phase: 'fetching_sitemaps',
+      currentSitemapUrl: sitemapUrl,
+      completed: fetchCompleted,
+      success: fetchSuccess,
+      failed: fetchFailed,
+      percent: totalSitemaps ? Math.round((fetchCompleted / totalSitemaps) * 80) : 100
+    });
+
     return { sitemapUrl, sitemapInfo, urlEntries, lastFetchStatus, lastSuccessfulFetchAt };
   });
 
@@ -201,6 +232,16 @@ export async function ingestConfiguredSitemaps(store, config, resolvePath, optio
   if (fetchFailures.length && !sources.useDemoUrlsWhenChildFetchFails) {
     throw new Error(fetchFailures.map((item) => `${item.sitemapUrl}: ${item.lastFetchStatus}`).join(' | '));
   }
+
+  let importCompleted = 0;
+  reportProgress({
+    phase: 'importing_urls',
+    completed: 0,
+    success: fetchSuccess,
+    failed: fetchFailed,
+    importedUrls: 0,
+    percent: totalSitemaps ? 80 : 100
+  });
 
   for (const fetched of fetchedSitemaps) {
     const { sitemapUrl, sitemapInfo } = fetched;
@@ -268,7 +309,27 @@ export async function ingestConfiguredSitemaps(store, config, resolvePath, optio
         urlSourceIndex.set(sourceKey, source);
       }
     }
+
+    importCompleted += 1;
+    reportProgress({
+      phase: 'importing_urls',
+      currentSitemapUrl: sitemapUrl,
+      completed: importCompleted,
+      success: fetchSuccess,
+      failed: fetchFailed,
+      importedUrls: urlCount,
+      percent: totalSitemaps ? 80 + Math.round((importCompleted / totalSitemaps) * 20) : 100
+    });
   }
+
+  reportProgress({
+    phase: 'complete',
+    completed: totalSitemaps,
+    success: fetchSuccess,
+    failed: fetchFailed,
+    importedUrls: urlCount,
+    percent: 100
+  });
 
   return { sitemapCount: sitemapUrls.length, urlCount };
 }

@@ -1271,6 +1271,7 @@ async function handleLiteApi(pathname, parsed, request, response) {
       inspection: config.policy.inspection,
       propertyMappings: config.propertyMappings,
       cron: cronState,
+      sitemapFetch: sitemapFetchState,
       importBatches: [],
       openAI: openAiStatus(),
       googleAuth: await googleAuthStatus(),
@@ -2180,6 +2181,17 @@ const sitemapFetchState = {
   running: false,
   startedAt: null,
   finishedAt: null,
+  progress: {
+    phase: 'idle',
+    percent: 0,
+    total: 0,
+    completed: 0,
+    success: 0,
+    failed: 0,
+    importedUrls: 0,
+    currentSitemapUrl: null,
+    updatedAt: null
+  },
   lastResult: null,
   lastError: null
 };
@@ -2193,7 +2205,13 @@ async function runSitemapFetchAction(body = {}, parsed = null) {
     includeLocal: false,
     fetchChildSitemaps: true,
     useDemoUrlsWhenChildFetchIsOff: false,
-    useDemoUrlsWhenChildFetchFails: false
+    useDemoUrlsWhenChildFetchFails: false,
+    onProgress: (progress) => {
+      sitemapFetchState.progress = {
+        ...sitemapFetchState.progress,
+        ...progress
+      };
+    }
   });
   const cleanedAfter = removeSitemapUrlRecords(context.store);
   const shouldRecalculatePriorities = body.recalculatePriorities === true
@@ -2215,6 +2233,7 @@ async function runSitemapFetchAction(body = {}, parsed = null) {
     urlsAfter: context.store.state.urls.length,
     urlsAddedOrUpdated: counts.urlCount,
     priorityRecalculated: shouldRecalculatePriorities,
+    progress: sitemapFetchState.progress,
     thresholds
   };
 }
@@ -2224,6 +2243,17 @@ async function startSitemapFetchAction(body = {}, parsed = null) {
   sitemapFetchState.running = true;
   sitemapFetchState.startedAt = nowIso();
   sitemapFetchState.finishedAt = null;
+  sitemapFetchState.progress = {
+    phase: 'queued',
+    percent: 0,
+    total: 0,
+    completed: 0,
+    success: 0,
+    failed: 0,
+    importedUrls: 0,
+    currentSitemapUrl: null,
+    updatedAt: sitemapFetchState.startedAt
+  };
   sitemapFetchState.lastError = null;
   sitemapFetchState.lastResult = null;
   runSitemapFetchAction(body, parsed)
@@ -2233,6 +2263,11 @@ async function startSitemapFetchAction(body = {}, parsed = null) {
     })
     .catch((error) => {
       sitemapFetchState.lastError = error.message;
+      sitemapFetchState.progress = {
+        ...sitemapFetchState.progress,
+        phase: 'failed',
+        updatedAt: nowIso()
+      };
       console.error('Sitemap fetch failed:', error);
     })
     .finally(() => {
@@ -2466,6 +2501,7 @@ const server = http.createServer(async (request, response) => {
         inspection: context.config.policy.inspection,
         propertyMappings: context.config.propertyMappings,
         cron: cronState,
+        sitemapFetch: sitemapFetchState,
         importBatches: (context.store.state.importBatches ?? [])
           .slice()
           .reverse()

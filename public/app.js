@@ -83,6 +83,36 @@ function fmtDate(value) {
   return new Date(value).toLocaleString();
 }
 
+function sitemapProgressText(progress = {}) {
+  const percent = Math.max(0, Math.min(100, Number(progress.percent ?? 0)));
+  const completed = Number(progress.completed ?? 0);
+  const total = Number(progress.total ?? 0);
+  const failed = Number(progress.failed ?? 0);
+  const imported = Number(progress.importedUrls ?? 0);
+  const phase = String(progress.phase ?? 'fetching_sitemaps').replaceAll('_', ' ');
+  const importedText = imported ? `, imported ${imported} URLs` : '';
+  return `${percent}% - ${completed}/${total} ${phase}, failed ${failed}${importedText}`;
+}
+
+function renderSitemapProgress(progress = {}) {
+  const percent = Math.max(0, Math.min(100, Number(progress.percent ?? 0)));
+  return `
+    <div class="setting-note">
+      <strong>Sitemap fetch progress:</strong> ${esc(sitemapProgressText(progress))}
+      <progress max="100" value="${percent}"></progress>
+      ${progress.currentSitemapUrl ? `<div class="source-list"><code>${esc(progress.currentSitemapUrl)}</code></div>` : ''}
+    </div>
+  `;
+}
+
+function updateSitemapProgressUi(progress) {
+  const summary = document.querySelector('#source-summary');
+  if (!summary || !progress) return;
+  const existing = summary.querySelector('[data-sitemap-progress]');
+  if (existing) existing.remove();
+  summary.insertAdjacentHTML('afterbegin', `<div data-sitemap-progress>${renderSitemapProgress(progress)}</div>`);
+}
+
 function table(headers, rows) {
   return `
     <table>
@@ -690,6 +720,7 @@ async function loadSettings() {
     `)
   );
   document.querySelector('#source-summary').innerHTML = `
+    ${settings.sitemapFetch?.running || settings.sitemapFetch?.lastResult ? renderSitemapProgress(settings.sitemapFetch.progress ?? settings.sitemapFetch.lastResult?.progress ?? {}) : ''}
     <strong>How this works:</strong> These sitemap URLs are discovery sources only. The engine fetches them, extracts page URLs, and inspects page URLs only.<br>
     <strong>Daily cron:</strong> ${settings.cron?.dailySitemapFetchEnabled ? 'enabled' : 'disabled'}${settings.cron?.lastRunAt ? `, last run ${fmtDate(settings.cron.lastRunAt)}` : ''}${settings.cron?.lastError ? `, last error: ${esc(settings.cron.lastError)}` : ''}<br>
     <strong>Sitemap indexes:</strong> ${(settings.sources.sitemapIndexUrls ?? []).length}<br>
@@ -1142,12 +1173,14 @@ document.querySelector('#fetch-sitemaps').addEventListener('click', async () => 
     setStatus('Starting sitemap fetch...');
     const result = await api('/api/actions/fetch-sitemaps', { method: 'POST', timeoutMs: 10000, body: '{}' });
     if (result.sitemapFetch) {
-      setStatus(result.message ?? 'Sitemap fetch started.');
-      for (let attempt = 0; attempt < 6; attempt += 1) {
+      updateSitemapProgressUi(result.sitemapFetch.progress);
+      setStatus(`${result.message ?? 'Sitemap fetch started.'} ${sitemapProgressText(result.sitemapFetch.progress)}`);
+      for (let attempt = 0; attempt < 120; attempt += 1) {
         await new Promise((resolve) => setTimeout(resolve, 5000));
         const status = await api('/api/actions/fetch-sitemaps/status', { timeoutMs: 10000 });
         if (status.sitemapFetch?.running) {
-          setStatus(`Sitemap fetch running since ${fmtDate(status.sitemapFetch.startedAt)}...`);
+          updateSitemapProgressUi(status.sitemapFetch.progress);
+          setStatus(`Sitemap fetch ${sitemapProgressText(status.sitemapFetch.progress)}.`);
           continue;
         }
         if (status.sitemapFetch?.lastError) {
@@ -1157,6 +1190,7 @@ document.querySelector('#fetch-sitemaps').addEventListener('click', async () => 
         if (status.sitemapFetch?.lastResult) {
           const done = status.sitemapFetch.lastResult;
           const summary = done.fetchSummary ?? { success: 0, failed: 0, pending: 0, total: done.counts?.sitemapCount ?? 0 };
+          updateSitemapProgressUi(status.sitemapFetch.progress);
           await refresh();
           setStatus(`Fetched ${summary.success}/${summary.total} sitemaps, failed ${summary.failed}, imported ${done.counts.urlCount} page URLs. URL list is now ${done.urlsAfter}.`);
           return;
