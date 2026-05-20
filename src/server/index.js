@@ -36,12 +36,13 @@ import { runScheduler } from '../core/scheduler.js';
 import { calculateNextDueAt } from '../core/stateMachine.js';
 import { isSitemapLikeUrl } from '../core/sitemap.js';
 import { getSearchConsoleAccessToken } from '../core/inspectionProvider.js';
-import { normalizeUrl, nowIso } from '../core/utils.js';
+import { dateKey, daysBetween, normalizeUrl, nowIso } from '../core/utils.js';
 
 const PORT = Number(process.env.PORT ?? 3000);
 const serverDir = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.resolve(serverDir, '../../public');
 const SESSION_COOKIE = 'ih_session';
+let litePool = null;
 
 function publicOrigin(fallbackOrigin) {
   return (process.env.APP_BASE_URL || fallbackOrigin).replace(/\/+$/, '');
@@ -230,6 +231,212 @@ function sendJson(response, statusCode, payload) {
 function sendText(response, statusCode, payload, contentType = 'text/plain; charset=utf-8') {
   response.writeHead(statusCode, { 'content-type': contentType });
   response.end(payload);
+}
+
+function getLitePool() {
+  if (!process.env.DATABASE_URL) return null;
+  if (!litePool) {
+    litePool = new pg.Pool({
+      connectionString: process.env.DATABASE_URL,
+      ssl: process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: false },
+      max: 2,
+      connectionTimeoutMillis: 5000,
+      idleTimeoutMillis: 10000
+    });
+  }
+  return litePool;
+}
+
+async function readAppStateArray(key, { limit = null, reverse = false } = {}) {
+  const pool = getLitePool();
+  if (!pool) return null;
+  const appStateKey = process.env.APP_STATE_KEY || 'default';
+  const limitSql = limit ? 'LIMIT $3' : '';
+  const params = limit ? [appStateKey, key, Number(limit)] : [appStateKey, key];
+  const result = await pool.query(
+    `
+      SELECT elem
+      FROM app_state,
+        jsonb_array_elements(COALESCE(state -> $2, '[]'::jsonb)) WITH ORDINALITY AS rows(elem, ord)
+      WHERE id = $1
+      ORDER BY ord ${reverse ? 'DESC' : 'ASC'}
+      ${limitSql}
+    `,
+    params
+  );
+  return result.rows.map((row) => row.elem);
+}
+
+async function readAppStateMeta() {
+  const pool = getLitePool();
+  if (!pool) return null;
+  const appStateKey = process.env.APP_STATE_KEY || 'default';
+  const result = await pool.query(
+    `
+      SELECT
+        pg_column_size(state)::int AS size_bytes,
+        jsonb_object_agg(key, COALESCE(jsonb_array_length(value), 0)) FILTER (WHERE jsonb_typeof(value) = 'array') AS array_counts
+      FROM app_state,
+        jsonb_each(state)
+      WHERE id = $1
+      GROUP BY state
+    `,
+    [appStateKey]
+  );
+  return result.rows[0] ?? null;
+}
+
+function liteOverviewFromArrays({ urls, inspectionResults, properties, alerts }) {
+  const today = dateKey();
+  const activeUrls = urls.filter((url) => url.isActive && !url.isManuallyExcluded);
+  const indexedStates = new Set(['submitted_and_indexed', 'stable_indexed']);
+  const indexedCount = activeUrls.filter((url) => indexedStates.has(url.currentIndexState)).length;
+  const scaled = activeUrls.filter((url) => url.isScaledContent);
+  const scaledIndexed = scaled.filter((url) => indexedStates.has(url.currentIndexState)).length;
+  const p0 = activeUrls.filter((url) => url.currentPriorityTier === 'P0');
+  const p0Indexed = p0.filter((url) => indexedStates.has(url.currentIndexState)).length;
+  const activeAlerts = alerts.filter((alert) => alert.status === 'active' && alert.alertType !== 'recovered');
+  const monthlyCovered = activeUrls.filter((url) => url.lastInspectedAt && daysBetween(url.lastInspectedAt) <= 30).length;
+  const categoryHealth = Object.values(activeUrls.reduce((acc, url) => {
+    const category = url.category ?? 'unknown';
+    acc[category] ??= { category, total: 0, indexed: 0, critical: 0 };
+    acc[category].total += 1;
+    if (indexedStates.has(url.currentIndexState)) acc[category].indexed += 1;
+    if (['index_loss_suspected', 'index_lost_confirmed', 'not_indexed', 'canonical_mismatch'].includes(url.currentIndexState)) {
+      acc[category].critical += 1;
+    }
+    return acc;
+  }, {}));
+
+  return {
+    inspectedToday: inspectionResults.filter((result) => dateKey(result.inspectedAt) === today).length,
+    quotaUsedToday: properties.reduce((sum, property) => sum + Number(property.dailyQuotaUsed ?? 0), 0),
+    monthlyCoveragePercent: activeUrls.length ? Math.round((monthlyCovered / activeUrls.length) * 100) : 0,
+    indexRate: activeUrls.length ? Math.round((indexedCount / activeUrls.length) * 100) : 0,
+    indexLossCount: activeUrls.filter((url) => ['index_loss_suspected', 'index_lost_confirmed'].includes(url.currentIndexState)).length,
+    scaledContentIndexRate: scaled.length ? Math.round((scaledIndexed / scaled.length) * 100) : 0,
+    p0IndexRate: p0.length ? Math.round((p0Indexed / p0.length) * 100) : 0,
+    averageTimeToIndex: 0,
+    openCriticalAlerts: activeAlerts.filter((alert) => ['critical', 'incident'].includes(alert.severity)).length,
+    overdueUrlCount: activeUrls.filter((url) => url.nextInspectionDueAt && new Date(url.nextInspectionDueAt) < new Date()).length,
+    categoryHealth
+  };
+}
+
+async function handleLiteApi(pathname, parsed, response) {
+  if (!process.env.DATABASE_URL) return false;
+
+  if (pathname === '/api/health/state') {
+    sendJson(response, 200, { ok: true, state: await readAppStateMeta(), contextLoad: contextLoadInfo });
+    return true;
+  }
+
+  if (pathname === '/api/overview') {
+    const [urls, inspectionResults, properties, alerts] = await Promise.all([
+      readAppStateArray('urls'),
+      readAppStateArray('inspectionResults'),
+      readAppStateArray('properties'),
+      readAppStateArray('alerts')
+    ]);
+    sendJson(response, 200, liteOverviewFromArrays({ urls, inspectionResults, properties, alerts }));
+    return true;
+  }
+
+  if (pathname === '/api/urls') {
+    const filters = Object.fromEntries(parsed.searchParams.entries());
+    const limit = Math.max(1, Math.min(Number(filters.limit || 150), 500));
+    const offset = Math.max(0, Number(filters.offset || 0) || 0);
+    const query = String(filters.q ?? '').toLowerCase();
+    const urls = await readAppStateArray('urls');
+    const filtered = urls.filter((url) => {
+      if (filters.priorityTier && url.currentPriorityTier !== filters.priorityTier) return false;
+      if (filters.indexState && url.currentIndexState !== filters.indexState) return false;
+      if (filters.category && url.category !== filters.category) return false;
+      if (filters.locale && url.locale !== filters.locale) return false;
+      if (filters.scaled === 'true' && !url.isScaledContent) return false;
+      if (filters.scaled === 'false' && url.isScaledContent) return false;
+      if (query && !String(url.normalizedUrl ?? '').toLowerCase().includes(query)) return false;
+      return true;
+    });
+    sendJson(response, 200, {
+      rows: filtered.slice(offset, offset + limit).map((url) => ({ ...url, health: null, sources: [], activeAlerts: [] })),
+      total: filtered.length,
+      limit,
+      offset,
+      hasMore: offset + limit < filtered.length,
+      lite: true
+    });
+    return true;
+  }
+
+  if (pathname === '/api/jobs') {
+    sendJson(response, 200, await readAppStateArray('inspectionJobs', { limit: 200, reverse: true }));
+    return true;
+  }
+
+  if (pathname === '/api/job-diagnostics') {
+    const jobs = await readAppStateArray('inspectionJobs');
+    sendJson(response, 200, {
+      summary: {
+        total: jobs.length,
+        pending: jobs.filter((job) => job.status === 'pending').length,
+        duePending: jobs.filter((job) => job.status === 'pending' && new Date(job.dueAt) <= new Date()).length,
+        running: jobs.filter((job) => job.status === 'running').length,
+        completed: jobs.filter((job) => job.status === 'completed').length,
+        skipped: jobs.filter((job) => job.status === 'skipped').length,
+        failed: jobs.filter((job) => job.status === 'failed').length
+      },
+      byStatus: [],
+      byReason: [],
+      byError: [],
+      recentProblemJobs: []
+    });
+    return true;
+  }
+
+  if (pathname === '/api/alerts') {
+    sendJson(response, 200, await readAppStateArray('alerts', { limit: 200, reverse: true }));
+    return true;
+  }
+
+  if (pathname === '/api/properties') {
+    sendJson(response, 200, await readAppStateArray('properties'));
+    return true;
+  }
+
+  if (pathname === '/api/sitemaps') {
+    const sitemaps = await readAppStateArray('sitemaps', { limit: 300, reverse: true });
+    sendJson(response, 200, sitemaps.map((sitemap) => {
+      const status = sitemap.lastFetchStatus ?? 'not_fetched';
+      const ok = status === 'success' || Boolean(sitemap.lastSuccessfulFetchAt) || Number(sitemap.urlCount ?? 0) > 0;
+      const failed = status.startsWith?.('fetch_failed');
+      return {
+        ...sitemap,
+        status,
+        health: ok ? 'success' : failed ? 'failed' : 'pending',
+        error: failed ? status.replace(/^fetch_failed:\s*/, '') : null
+      };
+    }));
+    return true;
+  }
+
+  if (pathname === '/api/settings') {
+    const config = await loadConfig();
+    sendJson(response, 200, {
+      sources: config.sources,
+      inspection: config.policy.inspection,
+      propertyMappings: config.propertyMappings,
+      cron: cronState,
+      importBatches: [],
+      openAI: openAiStatus(),
+      googleAuth: await googleAuthStatus(),
+      oauthRedirectUri: `${publicOrigin(parsed.origin)}/auth/google/callback`,
+      lite: true
+    });
+    return true;
+  }
+
+  return false;
 }
 
 async function readBody(request) {
@@ -1100,6 +1307,15 @@ const server = http.createServer(async (request, response) => {
     if (!pathname.startsWith('/api/')) {
       await serveStatic(response, pathname);
       return;
+    }
+
+    if (!context) {
+      try {
+        const handledLite = await handleLiteApi(pathname, parsed, response);
+        if (handledLite) return;
+      } catch (error) {
+        console.error('Lite API fallback failed:', error);
+      }
     }
 
     const contextLoadTimeoutMs = Number(process.env.CONTEXT_LOAD_API_TIMEOUT_MS ?? 15000);
