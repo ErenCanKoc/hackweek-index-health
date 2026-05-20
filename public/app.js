@@ -596,6 +596,22 @@ async function loadSettings() {
   document.querySelector('#inspection-provider').value = settings.inspection.provider ?? 'mock';
   document.querySelector('#inspection-language').value = settings.inspection.languageCode ?? 'en-US';
   document.querySelector('#fetch-child-sitemaps').checked = Boolean(settings.sources.fetchChildSitemaps);
+  document.querySelector('#import-history').innerHTML = table(
+    ['Import', 'Type', 'Rows', 'New URLs', 'Status', 'Created', 'Action'],
+    (settings.importBatches ?? []).map((batch) => `
+      <tr>
+        <td>#${batch.id}</td>
+        <td>${esc(batch.importType)}</td>
+        <td>${batch.importedRows}</td>
+        <td>${batch.urlsAdded}</td>
+        <td>${pill(batch.status)}</td>
+        <td>${fmtDate(batch.createdAt)}</td>
+        <td>
+          <button class="small-button" data-rollback-import="${batch.id}" ${batch.status === 'rolled_back' ? 'disabled' : ''}>Rollback</button>
+        </td>
+      </tr>
+    `)
+  );
   document.querySelector('#source-summary').innerHTML = `
     <strong>How this works:</strong> These sitemap URLs are discovery sources only. The engine fetches them, extracts page URLs, and inspects page URLs only.<br>
     <strong>Daily cron:</strong> ${settings.cron?.dailySitemapFetchEnabled ? 'enabled' : 'disabled'}${settings.cron?.lastRunAt ? `, last run ${fmtDate(settings.cron.lastRunAt)}` : ''}${settings.cron?.lastError ? `, last error: ${esc(settings.cron.lastError)}` : ''}<br>
@@ -760,6 +776,19 @@ document.addEventListener('click', async (event) => {
     const action = row.url.isManuallyExcluded ? 'include' : 'exclude';
     await api(`/api/urls/${exclude.dataset.exclude}/${action}`, { method: 'POST', body: '{}' });
     await refresh();
+  }
+
+  const rollbackImport = event.target.closest('[data-rollback-import]');
+  if (rollbackImport) {
+    const ok = window.confirm(`Rollback import #${rollbackImport.dataset.rollbackImport}? URLs created only by this import will be deleted and previous metric values will be restored when available.`);
+    if (!ok) return;
+    setStatus('Rolling back import...');
+    const result = await api(`/api/settings/imports/${rollbackImport.dataset.rollbackImport}/rollback`, {
+      method: 'POST',
+      body: '{}'
+    });
+    await refresh();
+    setStatus(`Rolled back import #${result.batch.id}. Deleted ${result.deletedUrls} URL(s), restored ${result.restoredMetrics} metric(s).`);
   }
 
   const selectedUrl = event.target.closest('[data-select-url]');

@@ -499,6 +499,52 @@ function compactState(store, options = {}) {
   return { before, after, removed, keep };
 }
 
+function gscMetricKey(metric) {
+  return `${metric.urlId}:${metric.sourceProperty ?? ''}`;
+}
+
+function businessMetricKey(metric) {
+  return `${metric.urlId}:${metric.metricType}:${metric.metricMonth}`;
+}
+
+function metricMap(rows, keyFn) {
+  return new Map(rows.map((row) => [keyFn(row), structuredClone(row)]));
+}
+
+function createImportBatch(store, payload) {
+  return store.insert('importBatches', {
+    ...payload,
+    status: 'applied',
+    createdAt: nowIso(),
+    updatedAt: nowIso()
+  });
+}
+
+function rollbackImportBatch(store, batchId) {
+  const batch = store.findById('importBatches', batchId);
+  if (!batch) return null;
+  if (batch.status === 'rolled_back') return { batch, alreadyRolledBack: true, deletedUrls: 0, restoredMetrics: 0 };
+
+  const deletedUrls = removeUrlData(store, batch.createdUrlIds ?? []);
+  const previousGsc = new Map((batch.previousGscMetrics ?? []).map((row) => [gscMetricKey(row), row]));
+  const previousBusiness = new Map((batch.previousBusinessMetrics ?? []).map((row) => [businessMetricKey(row), row]));
+  const touchedGscKeys = new Set(batch.touchedGscMetricKeys ?? []);
+  const touchedBusinessKeys = new Set(batch.touchedBusinessMetricKeys ?? []);
+
+  store.state.gscPerformanceMetrics = store.state.gscPerformanceMetrics
+    .filter((metric) => !touchedGscKeys.has(gscMetricKey(metric)));
+  store.state.businessMetrics = store.state.businessMetrics
+    .filter((metric) => !touchedBusinessKeys.has(businessMetricKey(metric)));
+
+  store.state.gscPerformanceMetrics.push(...previousGsc.values());
+  store.state.businessMetrics.push(...previousBusiness.values());
+  batch.status = 'rolled_back';
+  batch.rolledBackAt = nowIso();
+  batch.updatedAt = nowIso();
+  const restoredMetrics = previousGsc.size + previousBusiness.size;
+  return { batch, deletedUrls, restoredMetrics };
+}
+
 function restoreDeletedUrl(store, url) {
   const normalized = normalizeUrl(url);
   store.state.deletedUrls = (store.state.deletedUrls ?? []).filter((row) => row.normalizedUrl !== normalized);
@@ -741,6 +787,7 @@ const server = http.createServer(async (request, response) => {
         inspection: context.config.policy.inspection,
         propertyMappings: context.config.propertyMappings,
         cron: cronState,
+        importBatches: (context.store.state.importBatches ?? []).slice().reverse().slice(0, 20),
         googleAuth: await googleAuthStatus(),
         oauthRedirectUri: `${publicOrigin(parsed.origin)}/auth/google/callback`
       });
@@ -920,16 +967,48 @@ const server = http.createServer(async (request, response) => {
 
       const beforeUrls = context.store.state.urls.length;
       const sourceName = `dashboard:${importType}:${nowIso()}`;
+      const beforeUrlIds = new Set(context.store.state.urls.map((url) => Number(url.id)));
+      const beforeGscMetrics = metricMap(context.store.state.gscPerformanceMetrics, gscMetricKey);
+      const beforeBusinessMetrics = metricMap(context.store.state.businessMetrics, businessMetricKey);
       let importedRows = 0;
       if (importType === 'gsc') {
         importedRows = ingestGscCsvText(context.store, csvText, sourceName);
       } else {
         importedRows = ingestBusinessWideCsvText(context.store, csvText, importType, sourceName);
       }
+      const createdUrlIds = context.store.state.urls
+        .filter((url) => !beforeUrlIds.has(Number(url.id)))
+        .map((url) => url.id);
+      const touchedGscMetricKeys = context.store.state.gscPerformanceMetrics
+        .filter((metric) => metric.sourceFile === sourceName)
+        .map(gscMetricKey);
+      const touchedBusinessMetricKeys = context.store.state.businessMetrics
+        .filter((metric) => metric.sourceFile === sourceName)
+        .map(businessMetricKey);
+      const previousGscMetrics = touchedGscMetricKeys
+        .map((key) => beforeGscMetrics.get(key))
+        .filter(Boolean);
+      const previousBusinessMetrics = touchedBusinessMetricKeys
+        .map((key) => beforeBusinessMetrics.get(key))
+        .filter(Boolean);
       const thresholds = recalculatePriorities(context.store);
+      const batch = createImportBatch(context.store, {
+        importType,
+        sourceName,
+        importedRows,
+        urlsBefore: beforeUrls,
+        urlsAfter: context.store.state.urls.length,
+        urlsAdded: context.store.state.urls.length - beforeUrls,
+        createdUrlIds,
+        touchedGscMetricKeys,
+        touchedBusinessMetricKeys,
+        previousGscMetrics,
+        previousBusinessMetrics
+      });
       await context.store.save();
       sendJson(response, 200, {
         ok: true,
+        importBatch: batch,
         importType,
         importedRows,
         urlsBefore: beforeUrls,
@@ -973,6 +1052,19 @@ const server = http.createServer(async (request, response) => {
       const result = compactState(context.store, body);
       await context.store.save();
       sendJson(response, 200, { ok: true, result });
+      return;
+    }
+
+    const rollbackMatch = pathname.match(/^\/api\/settings\/imports\/(\d+)\/rollback$/);
+    if (rollbackMatch && request.method === 'POST') {
+      const result = rollbackImportBatch(context.store, Number(rollbackMatch[1]));
+      if (!result) {
+        sendJson(response, 404, { error: 'Import batch not found' });
+        return;
+      }
+      const thresholds = recalculatePriorities(context.store);
+      await context.store.save();
+      sendJson(response, 200, { ok: true, ...result, thresholds });
       return;
     }
 

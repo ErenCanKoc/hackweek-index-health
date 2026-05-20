@@ -20,7 +20,8 @@ const DEFAULT_STATE = {
   healthStatuses: [],
   alerts: [],
   gscPerformanceMetrics: [],
-  businessMetrics: []
+  businessMetrics: [],
+  importBatches: []
 };
 
 export class Store {

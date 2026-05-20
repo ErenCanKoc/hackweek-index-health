@@ -271,6 +271,7 @@ export function ingestGscCsvText(store, text, sourceName = 'dashboard') {
         impression: metric.impression,
         avgPosition: metric.avgPosition,
         sourceProperty: metric.sourceProperty,
+        sourceFile: sourceName,
         importedAt: now,
         createdAt: now
       },
@@ -279,6 +280,7 @@ export function ingestGscCsvText(store, text, sourceName = 'dashboard') {
         click: metric.click,
         impression: metric.impression,
         avgPosition: metric.avgPosition,
+        sourceFile: sourceName,
         importedAt: now
       }
     );
@@ -325,6 +327,7 @@ export function ingestBusinessWideCsvText(store, text, metricType, sourceName = 
         },
         {
           metricValue: Number(value || 0),
+          sourceFile: sourceName,
           importedAt: now
         }
       );
