@@ -249,8 +249,8 @@ function getLitePool() {
     litePool = new pg.Pool({
       connectionString: process.env.DATABASE_URL,
       ssl: process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: false },
-      max: 2,
-      connectionTimeoutMillis: 5000,
+      max: Number(process.env.DATABASE_LITE_POOL_MAX ?? 4),
+      connectionTimeoutMillis: Number(process.env.DATABASE_CONNECTION_TIMEOUT_MS ?? 10000),
       idleTimeoutMillis: 10000
     });
   }
@@ -864,6 +864,105 @@ async function readCachedProperties() {
   return result.rows.map((row) => row.row_json);
 }
 
+async function readCachedOverview() {
+  const pool = getLitePool();
+  if (!pool) return null;
+  await ensureDashboardCacheTables();
+  if (await cachedTableCount('dashboard_urls') === 0 && process.env.AUTO_SYNC_DASHBOARD_CACHE !== 'false') {
+    await refreshDashboardCache();
+  }
+  const appStateKey = process.env.APP_STATE_KEY || 'default';
+  const today = dateKey();
+  const result = await pool.query(
+    `
+      WITH active_urls AS (
+        SELECT *
+        FROM dashboard_urls
+        WHERE is_active = true
+          AND is_manually_excluded = false
+      ),
+      totals AS (
+        SELECT
+          COUNT(*)::int AS active_total,
+          COUNT(*) FILTER (WHERE current_index_state IN ('submitted_and_indexed', 'stable_indexed'))::int AS indexed_total,
+          COUNT(*) FILTER (WHERE is_scaled_content = true)::int AS scaled_total,
+          COUNT(*) FILTER (
+            WHERE is_scaled_content = true
+              AND current_index_state IN ('submitted_and_indexed', 'stable_indexed')
+          )::int AS scaled_indexed_total,
+          COUNT(*) FILTER (WHERE current_priority_tier = 'P0')::int AS p0_total,
+          COUNT(*) FILTER (
+            WHERE current_priority_tier = 'P0'
+              AND current_index_state IN ('submitted_and_indexed', 'stable_indexed')
+          )::int AS p0_indexed_total,
+          COUNT(*) FILTER (WHERE current_index_state IN ('index_loss_suspected', 'index_lost_confirmed'))::int AS index_loss_total,
+          COUNT(*) FILTER (WHERE next_inspection_due_at IS NOT NULL AND next_inspection_due_at < now())::int AS overdue_total,
+          COUNT(*) FILTER (WHERE last_seen_at IS NOT NULL AND last_seen_at >= now() - interval '30 days')::int AS monthly_covered
+        FROM active_urls
+      ),
+      categories AS (
+        SELECT COALESCE(category, 'unknown') AS category,
+          COUNT(*)::int AS total,
+          COUNT(*) FILTER (WHERE current_index_state IN ('submitted_and_indexed', 'stable_indexed'))::int AS indexed,
+          COUNT(*) FILTER (WHERE current_index_state IN ('index_loss_suspected', 'index_lost_confirmed', 'not_indexed', 'canonical_mismatch'))::int AS critical
+        FROM active_urls
+        GROUP BY COALESCE(category, 'unknown')
+      ),
+      state AS (
+        SELECT state
+        FROM app_state
+        WHERE id = $1
+      ),
+      inspection_today AS (
+        SELECT COUNT(*)::int AS inspected_today
+        FROM state,
+          jsonb_array_elements(COALESCE(state -> 'inspectionResults', '[]'::jsonb)) AS rows(elem)
+        WHERE LEFT(COALESCE(elem ->> 'inspectedAt', ''), 10) = $2
+      ),
+      quota AS (
+        SELECT COALESCE(SUM(COALESCE((elem ->> 'dailyQuotaUsed')::int, 0)), 0)::int AS quota_used_today
+        FROM state,
+          jsonb_array_elements(COALESCE(state -> 'properties', '[]'::jsonb)) AS rows(elem)
+      ),
+      critical_alerts AS (
+        SELECT COUNT(*)::int AS open_critical_alerts
+        FROM state,
+          jsonb_array_elements(COALESCE(state -> 'alerts', '[]'::jsonb)) AS rows(elem)
+        WHERE elem ->> 'status' = 'active'
+          AND COALESCE(elem ->> 'alertType', '') <> 'recovered'
+          AND elem ->> 'severity' IN ('critical', 'incident')
+      )
+      SELECT
+        totals.*,
+        inspection_today.inspected_today,
+        quota.quota_used_today,
+        critical_alerts.open_critical_alerts,
+        COALESCE((SELECT jsonb_agg(categories ORDER BY category) FROM categories), '[]'::jsonb) AS category_health
+      FROM totals, inspection_today, quota, critical_alerts
+    `,
+    [appStateKey, today]
+  );
+  const row = result.rows[0] ?? {};
+  const activeTotal = Number(row.active_total ?? 0);
+  const scaledTotal = Number(row.scaled_total ?? 0);
+  const p0Total = Number(row.p0_total ?? 0);
+  return {
+    inspectedToday: Number(row.inspected_today ?? 0),
+    quotaUsedToday: Number(row.quota_used_today ?? 0),
+    monthlyCoveragePercent: activeTotal ? Math.round((Number(row.monthly_covered ?? 0) / activeTotal) * 100) : 0,
+    indexRate: activeTotal ? Math.round((Number(row.indexed_total ?? 0) / activeTotal) * 100) : 0,
+    indexLossCount: Number(row.index_loss_total ?? 0),
+    scaledContentIndexRate: scaledTotal ? Math.round((Number(row.scaled_indexed_total ?? 0) / scaledTotal) * 100) : 0,
+    p0IndexRate: p0Total ? Math.round((Number(row.p0_indexed_total ?? 0) / p0Total) * 100) : 0,
+    averageTimeToIndex: 0,
+    openCriticalAlerts: Number(row.open_critical_alerts ?? 0),
+    overdueUrlCount: Number(row.overdue_total ?? 0),
+    categoryHealth: row.category_health ?? [],
+    lite: true,
+    cached: true
+  };
+}
+
 function normalizeUrlsForDeletion(values) {
   return normalizeUrlList(values).map((value) => {
     try {
@@ -1169,13 +1268,7 @@ async function handleLiteApi(pathname, parsed, request, response) {
   }
 
   if (pathname === '/api/overview') {
-    const [urls, inspectionResults, properties, alerts] = await Promise.all([
-      readAppStateArray('urls'),
-      readAppStateArray('inspectionResults'),
-      readAppStateArray('properties'),
-      readAppStateArray('alerts')
-    ]);
-    sendJson(response, 200, liteOverviewFromArrays({ urls, inspectionResults, properties, alerts }));
+    sendJson(response, 200, await readCachedOverview());
     return true;
   }
 
