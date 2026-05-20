@@ -224,7 +224,8 @@ function countManualPriorityOverrides(store) {
 export function roadmap(store, config) {
   const activeUrls = store.state.urls.filter((url) => url.isActive && !url.isManuallyExcluded);
   const sitemapSourceCount = (config.sources.sitemapIndexUrls ?? []).length + (config.sources.childSitemapUrls ?? []).length;
-  const successfulSitemaps = store.state.sitemaps.filter((sitemap) => sitemap.lastFetchStatus === 'success');
+  const sitemapLog = sitemapFetchLog(store);
+  const successfulSitemaps = sitemapLog.filter((sitemap) => sitemap.health === 'success');
   const gscConfigured = config.policy.inspection.provider === 'gsc';
   const connectedProperties = store.state.properties.filter((property) => property.isActive && property.authStatus === 'ok');
   const inspectedUrls = new Set(store.state.inspectionResults.map((result) => result.urlId));
@@ -252,8 +253,8 @@ export function roadmap(store, config) {
     {
       area: 'Discovery',
       title: 'Sitemap fetch imports page URLs',
-      status: statusFrom(successfulSitemaps.length > 0 && activeUrls.length > 0, store.state.sitemaps.length > 0 || activeUrls.length > 0),
-      metric: `${successfulSitemaps.length}/${store.state.sitemaps.length} fetched, ${activeUrls.length} active URL(s)`,
+      status: statusFrom(successfulSitemaps.length > 0 && activeUrls.length > 0, sitemapLog.length > 0 || activeUrls.length > 0),
+      metric: `${successfulSitemaps.length}/${sitemapLog.length} fetched, ${activeUrls.length} active URL(s)`,
       nextAction: successfulSitemaps.length ? 'Keep fetch running after source changes.' : 'Click Fetch Sitemap URLs after adding sitemap sources.'
     },
     {
