@@ -5,7 +5,7 @@ import path from 'node:path';
 import pg from 'pg';
 import { fileURLToPath } from 'node:url';
 import { createContext, seedContext } from '../core/bootstrap.js';
-import { loadConfig, readJson, writeJson } from '../core/config.js';
+import { loadConfig, readJson, withStoredSources, writeJson } from '../core/config.js';
 import {
   ingestBusinessWideCsvText,
   ingestConfiguredSitemaps,
@@ -34,6 +34,7 @@ import {
 } from '../core/reporting.js';
 import { runScheduler } from '../core/scheduler.js';
 import { calculateNextDueAt } from '../core/stateMachine.js';
+import { loadStore } from '../core/store.js';
 import { isSitemapLikeUrl } from '../core/sitemap.js';
 import {
   createSitemapFetchJob,
@@ -1274,7 +1275,7 @@ async function handleLiteApi(pathname, parsed, request, response) {
   }
 
   if (pathname === '/api/settings') {
-    const config = await loadConfig();
+    const config = await loadEffectiveConfigForSettings();
     sendJson(response, 200, {
       sources: config.sources,
       inspection: config.policy.inspection,
@@ -1293,7 +1294,7 @@ async function handleLiteApi(pathname, parsed, request, response) {
 
   if (pathname === '/api/settings/sources' && request.method === 'POST') {
     const body = await readBody(request);
-    const sources = await readJson('config/sources.json');
+    const sources = (await loadEffectiveConfigForSettings()).sources;
     sources.sitemapIndexUrls ??= [];
     sources.childSitemapUrls ??= [];
     const added = { sitemapIndexUrls: [], childSitemapUrls: [] };
@@ -1336,15 +1337,14 @@ async function handleLiteApi(pathname, parsed, request, response) {
       sources.useDemoUrlsWhenChildFetchIsOff = body.useDemoUrlsWhenChildFetchIsOff;
     }
 
-    await writeJson('config/sources.json', sources);
-    await reloadRuntimeConfig();
+    await saveRuntimeSources(sources);
     sendJson(response, 200, { ok: true, sources, added, skipped, lite: true });
     return true;
   }
 
   if (pathname === '/api/settings/sources/delete' && request.method === 'POST') {
     const body = await readBody(request);
-    const sources = await readJson('config/sources.json');
+    const sources = (await loadEffectiveConfigForSettings()).sources;
     const sitemapIndexUrls = new Set(normalizeUrlList([body.sitemapIndexUrls, body.sitemapIndexUrl]));
     const childSitemapUrls = new Set(normalizeUrlList([body.childSitemapUrls, body.childSitemapUrl]));
     const before = {
@@ -1357,8 +1357,7 @@ async function handleLiteApi(pathname, parsed, request, response) {
       sitemapIndexUrls: before.sitemapIndexUrls - sources.sitemapIndexUrls.length,
       childSitemapUrls: before.childSitemapUrls - sources.childSitemapUrls.length
     };
-    await writeJson('config/sources.json', sources);
-    await reloadRuntimeConfig();
+    await saveRuntimeSources(sources);
     sendJson(response, 200, { ok: true, sources, deleted, lite: true });
     return true;
   }
@@ -1376,14 +1375,13 @@ async function handleLiteApi(pathname, parsed, request, response) {
   if (pathname === '/api/settings/sitemaps/delete' && request.method === 'POST') {
     const body = await readBody(request);
     const sitemapUrls = normalizeUrlList([body.sitemapUrls, body.sitemapUrl]);
-    const sources = await readJson('config/sources.json');
+    const sources = (await loadEffectiveConfigForSettings()).sources;
     const beforeExcluded = sources.excludedSitemapUrls?.length ?? 0;
     const selected = new Set(sitemapUrls);
     sources.excludedSitemapUrls = [...new Set([...(sources.excludedSitemapUrls ?? []), ...sitemapUrls])];
     sources.sitemapIndexUrls = (sources.sitemapIndexUrls ?? []).filter((url) => !selected.has(url));
     sources.childSitemapUrls = (sources.childSitemapUrls ?? []).filter((url) => !selected.has(url));
-    await writeJson('config/sources.json', sources);
-    await reloadRuntimeConfig();
+    await saveRuntimeSources(sources);
     const result = await deleteFetchedSitemapsInPostgresState(sitemapUrls);
     await refreshDashboardCache().catch((error) => console.error('Dashboard cache refresh failed after sitemap delete:', error.message));
     sendJson(response, 200, {
@@ -1540,7 +1538,22 @@ function addManualUrlToStore(store, body) {
 }
 
 async function reloadRuntimeConfig() {
-  if (context) context.config = await loadConfig();
+  if (context) context.config = withStoredSources(await loadConfig(), context.store);
+}
+
+async function loadEffectiveConfigForSettings() {
+  if (context?.store) return withStoredSources(await loadConfig(), context.store);
+  const store = await loadStore();
+  return withStoredSources(await loadConfig(), store);
+}
+
+async function saveRuntimeSources(sources) {
+  await writeJson('config/sources.json', sources);
+  const store = context?.store ?? await loadStore();
+  store.state.configSources = sources;
+  await store.save();
+  await reloadRuntimeConfig();
+  return sources;
 }
 
 function inferCategoryFromPath(pathPrefix) {
@@ -2537,10 +2550,11 @@ const server = http.createServer(async (request, response) => {
     }
 
     if (pathname === '/api/settings') {
+      const effectiveConfig = withStoredSources(context.config, context.store);
       sendJson(response, 200, {
-        sources: context.config.sources,
-        inspection: context.config.policy.inspection,
-        propertyMappings: context.config.propertyMappings,
+        sources: effectiveConfig.sources,
+        inspection: effectiveConfig.policy.inspection,
+        propertyMappings: effectiveConfig.propertyMappings,
         cron: cronState,
         sitemapFetch: await latestSitemapFetchState(),
         sitemapFetchJobs: await listSitemapFetchJobs(5),
@@ -2558,7 +2572,7 @@ const server = http.createServer(async (request, response) => {
 
     if (pathname === '/api/settings/sources' && request.method === 'POST') {
       const body = await readBody(request);
-      const sources = await readJson('config/sources.json');
+      const sources = withStoredSources(context.config, context.store).sources;
       sources.sitemapIndexUrls ??= [];
       sources.childSitemapUrls ??= [];
       const added = { sitemapIndexUrls: [], childSitemapUrls: [] };
@@ -2601,15 +2615,14 @@ const server = http.createServer(async (request, response) => {
         sources.useDemoUrlsWhenChildFetchIsOff = body.useDemoUrlsWhenChildFetchIsOff;
       }
 
-      await writeJson('config/sources.json', sources);
-      await reloadRuntimeConfig();
+      await saveRuntimeSources(sources);
       sendJson(response, 200, { ok: true, sources, added, skipped });
       return;
     }
 
     if (pathname === '/api/settings/sources/delete' && request.method === 'POST') {
       const body = await readBody(request);
-      const sources = await readJson('config/sources.json');
+      const sources = withStoredSources(context.config, context.store).sources;
       const sitemapIndexUrls = new Set(normalizeUrlList([body.sitemapIndexUrls, body.sitemapIndexUrl]));
       const childSitemapUrls = new Set(normalizeUrlList([body.childSitemapUrls, body.childSitemapUrl]));
       const before = {
@@ -2622,15 +2635,14 @@ const server = http.createServer(async (request, response) => {
         sitemapIndexUrls: before.sitemapIndexUrls - sources.sitemapIndexUrls.length,
         childSitemapUrls: before.childSitemapUrls - sources.childSitemapUrls.length
       };
-      await writeJson('config/sources.json', sources);
-      await reloadRuntimeConfig();
+      await saveRuntimeSources(sources);
       sendJson(response, 200, { ok: true, sources, deleted });
       return;
     }
 
     if (pathname === '/api/settings/sitemaps/delete' && request.method === 'POST') {
       const body = await readBody(request);
-      const sources = await readJson('config/sources.json');
+      const sources = withStoredSources(context.config, context.store).sources;
       const sitemapUrls = new Set(normalizeUrlList([body.sitemapUrls, body.sitemapUrl]));
       const beforeSitemaps = context.store.state.sitemaps.length;
       const beforeSources = context.store.state.urlSources.length;
@@ -2653,8 +2665,7 @@ const server = http.createServer(async (request, response) => {
       const deletedUrls = purgeUrlData(context.store, orphanedFromDeletedSitemaps);
       const cleanedOrphanUrls = cleanupOrphanUrls(context.store);
 
-      await writeJson('config/sources.json', sources);
-      await reloadRuntimeConfig();
+      await saveRuntimeSources(sources);
       await context.store.save();
       sendJson(response, 200, {
         ok: true,

@@ -1,5 +1,5 @@
 import pg from 'pg';
-import { loadConfig } from './config.js';
+import { loadConfig, withStoredSources } from './config.js';
 import { ingestConfiguredSitemaps } from './ingestion.js';
 import { recalculatePriorities } from './priority.js';
 import { runScheduler } from './scheduler.js';
@@ -266,7 +266,7 @@ export async function executeSitemapFetchJob(jobId, options = {}) {
   });
 
   const store = options.store ?? await new Store().load();
-  const config = options.config ?? await loadConfig();
+  const config = options.config ?? withStoredSources(await loadConfig(), store);
   const fetchOptions = job.options ?? {};
   let lastProgressWrite = 0;
 

@@ -1,12 +1,12 @@
-import { loadConfig, resolvePath } from './config.js';
+import { loadConfig, resolvePath, withStoredSources } from './config.js';
 import { ingestAllConfiguredSources } from './ingestion.js';
 import { ensureProperties } from './propertyResolver.js';
 import { recalculatePriorities } from './priority.js';
 import { loadStore } from './store.js';
 
 export async function createContext(options = {}) {
-  const config = await loadConfig();
   const store = await loadStore(options.storePath);
+  const config = withStoredSources(await loadConfig(), store);
   store.config = config;
   ensureProperties(store, config.propertyMappings, config.policy);
   return { config, store, resolvePath };

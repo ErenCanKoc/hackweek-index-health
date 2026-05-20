@@ -22,6 +22,7 @@ const DEFAULT_STATE = {
   gscPerformanceMetrics: [],
   businessMetrics: [],
   importBatches: [],
+  configSources: null,
   sitemapFetchJobs: []
 };
 
