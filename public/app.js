@@ -473,6 +473,8 @@ async function loadRoadmap() {
 async function loadSettings() {
   const [urls, settings, sitemaps] = await Promise.all([api('/api/urls'), api('/api/settings'), api('/api/sitemaps')]);
   const auth = settings.googleAuth;
+  const manualCategory = document.querySelector('#manual-category');
+  if (manualCategory && !manualCategory.innerHTML) manualCategory.innerHTML = categoryOptions('pages');
   document.querySelector('#google-connect-title').textContent = auth.connected
     ? 'Google account connected'
     : 'Connect your Google account';
