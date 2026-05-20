@@ -451,6 +451,10 @@ details .button.secondary:hover {
   max-height: 220px;
 }
 
+#sitemap-fetch-log.table-wrap.slim {
+  max-height: 320px;
+}
+
 .bar-list {
   padding: 8px 14px 14px;
 }

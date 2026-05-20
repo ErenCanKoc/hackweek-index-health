@@ -110,6 +110,32 @@ export function scaledDashboard(store) {
   };
 }
 
+export function sitemapFetchLog(store) {
+  return store.state.sitemaps
+    .slice()
+    .sort((a, b) => new Date(b.updatedAt ?? b.lastSuccessfulFetchAt ?? 0) - new Date(a.updatedAt ?? a.lastSuccessfulFetchAt ?? 0))
+    .map((sitemap) => {
+      const status = sitemap.lastFetchStatus ?? 'not_fetched';
+      const ok = status === 'success' || Boolean(sitemap.lastSuccessfulFetchAt) || Number(sitemap.urlCount ?? 0) > 0;
+      const failed = status.startsWith('fetch_failed');
+      return {
+        id: sitemap.id,
+        sitemapUrl: sitemap.sitemapUrl,
+        status,
+        health: ok ? 'success' : failed ? 'failed' : 'pending',
+        urlCount: sitemap.urlCount ?? 0,
+        skippedSitemapLocCount: sitemap.skippedSitemapLocCount ?? 0,
+        detectedCategory: sitemap.detectedCategory ?? 'unknown',
+        detectedLocale: sitemap.detectedLocale ?? null,
+        isScaledContent: Boolean(sitemap.isScaledContent),
+        scaledContentType: sitemap.scaledContentType ?? null,
+        lastSuccessfulFetchAt: sitemap.lastSuccessfulFetchAt ?? null,
+        updatedAt: sitemap.updatedAt ?? null,
+        error: failed ? status.replace(/^fetch_failed:\s*/, '') : null
+      };
+    });
+}
+
 export function exportHealthReport(store) {
   const lines = [
     'url,priority_tier,index_state,health_state,category,locale,is_scaled_content,last_inspected_at,next_inspection_due_at,active_alerts'

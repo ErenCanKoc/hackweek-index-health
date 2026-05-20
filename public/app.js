@@ -410,7 +410,7 @@ async function loadRoadmap() {
 }
 
 async function loadSettings() {
-  const [urls, settings] = await Promise.all([api('/api/urls'), api('/api/settings')]);
+  const [urls, settings, sitemaps] = await Promise.all([api('/api/urls'), api('/api/settings'), api('/api/sitemaps')]);
   const auth = settings.googleAuth;
   document.querySelector('#google-connect-title').textContent = auth.connected
     ? 'Google account connected'
@@ -440,6 +440,22 @@ async function loadSettings() {
     <div class="source-list">${(settings.sources.childSitemapUrls ?? []).map((url) => `<code>${esc(url)}</code>`).join('') || 'none'}</div>
     <strong>Manual URL files:</strong> ${(settings.sources.manualUrlFiles ?? []).map(esc).join(', ') || 'none'}
   `;
+  document.querySelector('#sitemap-fetch-log').innerHTML = table(
+    ['Sitemap', 'Status', 'URLs', 'Skipped', 'Category', 'Locale', 'Scaled', 'Last Success', 'Error'],
+    sitemaps.map((sitemap) => `
+      <tr>
+        <td><code>${esc(sitemap.sitemapUrl)}</code></td>
+        <td>${pill(sitemap.health)}</td>
+        <td>${sitemap.urlCount}</td>
+        <td>${sitemap.skippedSitemapLocCount}</td>
+        <td>${esc(sitemap.detectedCategory)}</td>
+        <td>${esc(sitemap.detectedLocale ?? '-')}</td>
+        <td>${sitemap.isScaledContent ? esc(sitemap.scaledContentType ?? 'yes') : 'no'}</td>
+        <td>${fmtDate(sitemap.lastSuccessfulFetchAt)}</td>
+        <td>${esc(sitemap.error ?? '-')}</td>
+      </tr>
+    `)
+  );
 
   if (auth.connected) {
     try {
@@ -667,7 +683,8 @@ document.querySelector('#fetch-sitemaps').addEventListener('click', async () => 
   setStatus('Fetching sitemap URLs...');
   const result = await api('/api/actions/fetch-sitemaps', { method: 'POST', body: '{}' });
   await refresh();
-  setStatus(`Fetched ${result.counts.sitemapCount} sitemaps, imported ${result.counts.urlCount} page URLs, cleaned ${result.cleanedSitemapUrlRecords} sitemap URL records. URL list is now ${result.urlsAfter}.`);
+  const summary = result.fetchSummary ?? { success: 0, failed: 0, pending: 0, total: result.counts.sitemapCount };
+  setStatus(`Fetched ${summary.success}/${summary.total} sitemaps, failed ${summary.failed}, imported ${result.counts.urlCount} page URLs, cleaned ${result.cleanedSitemapUrlRecords} sitemap URL records. URL list is now ${result.urlsAfter}.`);
 });
 
 document.querySelector('#sync-gsc-properties').addEventListener('click', async () => {

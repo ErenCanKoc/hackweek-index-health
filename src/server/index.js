@@ -21,7 +21,7 @@ import {
 } from '../core/googleAuth.js';
 import { ensureProperties } from '../core/propertyResolver.js';
 import { recalculatePriorities } from '../core/priority.js';
-import { exportHealthReport, overview, roadmap, scaledDashboard, urlDetail, urlExplorer } from '../core/reporting.js';
+import { exportHealthReport, overview, roadmap, scaledDashboard, sitemapFetchLog, urlDetail, urlExplorer } from '../core/reporting.js';
 import { runScheduler } from '../core/scheduler.js';
 import { calculateNextDueAt } from '../core/stateMachine.js';
 import { isSitemapLikeUrl } from '../core/sitemap.js';
@@ -595,10 +595,17 @@ const server = http.createServer(async (request, response) => {
       });
       const cleanedAfter = removeSitemapUrlRecords(context.store);
       const thresholds = recalculatePriorities(context.store);
+      const fetchLog = sitemapFetchLog(context.store);
       await context.store.save();
       sendJson(response, 200, {
         ok: true,
         counts,
+        fetchSummary: {
+          success: fetchLog.filter((row) => row.health === 'success').length,
+          failed: fetchLog.filter((row) => row.health === 'failed').length,
+          pending: fetchLog.filter((row) => row.health === 'pending').length,
+          total: fetchLog.length
+        },
         cleanedSitemapUrlRecords: cleanedBefore + cleanedAfter,
         urlsBefore: beforeUrls,
         urlsAfter: context.store.state.urls.length,
@@ -861,6 +868,11 @@ const server = http.createServer(async (request, response) => {
 
     if (pathname === '/api/scaled') {
       sendJson(response, 200, scaledDashboard(context.store));
+      return;
+    }
+
+    if (pathname === '/api/sitemaps') {
+      sendJson(response, 200, sitemapFetchLog(context.store));
       return;
     }
 
