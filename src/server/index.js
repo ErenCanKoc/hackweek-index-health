@@ -692,6 +692,40 @@ async function refreshDashboardCache() {
       `,
       [appStateKey]
     );
+    await pool.query(
+      `
+        WITH source_rows AS (
+          SELECT
+            (elem ->> 'urlId')::bigint AS url_id,
+            jsonb_agg(
+              jsonb_build_object(
+                'sourceType', elem ->> 'sourceType',
+                'sourceIdentifier', elem ->> 'sourceIdentifier',
+                'sourceSitemapUrl', elem ->> 'sourceSitemapUrl',
+                'firstSeenAt', elem ->> 'firstSeenAt',
+                'lastSeenAt', elem ->> 'lastSeenAt'
+              )
+              ORDER BY ord DESC
+            ) AS sources,
+            string_agg(
+              DISTINCT COALESCE(elem ->> 'sourceSitemapUrl', elem ->> 'sourceIdentifier', ''),
+              ' '
+            ) AS source_text
+          FROM app_state,
+            jsonb_array_elements(COALESCE(state -> 'urlSources', '[]'::jsonb)) WITH ORDINALITY AS rows(elem, ord)
+          WHERE app_state.id = $1
+            AND elem ? 'urlId'
+          GROUP BY (elem ->> 'urlId')::bigint
+        )
+        UPDATE dashboard_urls AS url
+        SET source_sitemaps = source_rows.sources,
+            source_text = COALESCE(source_rows.source_text, ''),
+            updated_at = now()
+        FROM source_rows
+        WHERE url.id = source_rows.url_id
+      `,
+      [appStateKey]
+    );
     await pool.query('COMMIT');
     return {
       urls: urlsResult.rowCount,
@@ -808,10 +842,6 @@ async function readCachedUrlPage(filters) {
       sources: row.source_sitemaps ?? [],
       activeAlerts: []
     }));
-  if (filters.includeSources === 'true') {
-    const sourcesByUrlId = await readLiteSourcesForUrlIds(rows.map((row) => row.id));
-    for (const row of rows) row.sources = sourcesByUrlId.get(row.id) ?? [];
-  }
   return {
     rows,
     total,
