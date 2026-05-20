@@ -58,6 +58,7 @@ export function urlExplorer(store, filters = {}) {
     .map((url) => ({
       ...url,
       health: store.state.healthStatuses.find((status) => status.urlId === url.id) ?? null,
+      sources: store.state.urlSources.filter((source) => source.urlId === url.id),
       activeAlerts: store.state.alerts.filter((alert) => alert.urlId === url.id && alert.status === 'active')
     }));
 }

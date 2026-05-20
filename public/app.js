@@ -98,6 +98,16 @@ function sourceRows(settings) {
   ];
 }
 
+function sourceSitemapCell(url) {
+  const sitemapSources = (url.sources ?? [])
+    .map((source) => source.sourceSitemapUrl || source.sourceIdentifier)
+    .filter(Boolean);
+  if (!sitemapSources.length) return '<span class="muted">manual / unknown</span>';
+  return [...new Set(sitemapSources)]
+    .map((source) => `<code class="source-code">${esc(source)}</code>`)
+    .join('');
+}
+
 async function deleteUrlIds(ids) {
   if (!ids.length) {
     setStatus('Select at least one URL to delete.');
@@ -580,12 +590,20 @@ async function loadSettings() {
   }
 
   const manualSearch = document.querySelector('#manual-overrides-search')?.value?.toLowerCase() ?? '';
-  const manualRows = urls.filter((url) => !manualSearch || url.normalizedUrl.toLowerCase().includes(manualSearch));
+  const manualRows = urls.filter((url) => {
+    const sourceText = (url.sources ?? [])
+      .map((source) => source.sourceSitemapUrl || source.sourceIdentifier)
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+    return !manualSearch || url.normalizedUrl.toLowerCase().includes(manualSearch) || sourceText.includes(manualSearch);
+  });
   document.querySelector('#manual-overrides').innerHTML = table(
-    ['URL', 'Tier', 'Active', 'Manual', 'Action'],
+    ['URL', 'Source Sitemap', 'Tier', 'Active', 'Manual', 'Action'],
     manualRows.map((url) => `
       <tr>
         <td><code>${url.normalizedUrl}</code></td>
+        <td>${sourceSitemapCell(url)}</td>
         <td>${pill(url.currentPriorityTier)}</td>
         <td>${url.isActive ? 'yes' : 'no'}</td>
         <td>${url.isManuallyExcluded ? 'excluded' : '-'}</td>

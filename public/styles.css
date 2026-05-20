@@ -643,6 +643,14 @@ input[type="search"] {
   overflow-wrap: anywhere;
 }
 
+.source-code {
+  display: block;
+  max-width: 520px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .table-wrap {
   width: 100%;
   overflow: auto;
