@@ -28,10 +28,25 @@ function splitBulkUrls(value) {
 }
 
 async function api(path, options = {}) {
-  const response = await fetch(path, {
+  const timeoutMs = Number(options.timeoutMs ?? 20000);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const { timeoutMs: _timeoutMs, ...fetchOptions } = options;
+  let response;
+  try {
+    response = await fetch(path, {
     headers: { 'content-type': 'application/json' },
-    ...options
-  });
+      signal: controller.signal,
+      ...fetchOptions
+    });
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      throw new Error(`${path} timed out after ${Math.round(timeoutMs / 1000)}s`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
   if (!response.ok) throw new Error(await response.text());
   return response.json();
 }
