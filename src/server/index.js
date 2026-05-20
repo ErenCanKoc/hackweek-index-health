@@ -2350,6 +2350,39 @@ function sitemapFetchStateFromJob(job) {
   };
 }
 
+async function handleCsvPreviewRequest(request, response) {
+  const body = await readBody(request);
+  const csvText = String(body.csvText ?? body.csv ?? '').trim();
+  const importType = String(body.importType ?? body.type ?? '').trim();
+  if (!csvText) {
+    sendJson(response, 400, { error: 'csvText is required' });
+    return;
+  }
+  if (!['gsc', 'p30_users', 'signup_count'].includes(importType)) {
+    sendJson(response, 400, { error: 'importType must be gsc, p30_users, or signup_count' });
+    return;
+  }
+  const lines = csvText.split(/\r?\n/).filter((line) => line.trim());
+  const previewRows = parseCsv(csvText);
+  const headers = Object.keys(previewRows[0] ?? {});
+  const normalizedHeaders = headers.map((header) => header.trim().toLowerCase());
+  const warnings = [];
+  if (importType === 'gsc' && !normalizedHeaders.some((header) => ['url', 'page', 'landing page', 'landing_page'].includes(header))) {
+    warnings.push('GSC CSV should include a url column.');
+  }
+  if (importType !== 'gsc' && !normalizedHeaders.some((header) => ['path', 'url', 'page', 'landing page', 'landing_page'].includes(header))) {
+    warnings.push('P30/signup wide CSV should include a path or url column.');
+  }
+  sendJson(response, 200, {
+    ok: true,
+    importType,
+    rowCount: previewRows.length,
+    headers,
+    sampleRows: lines.slice(1, 6),
+    warnings
+  });
+}
+
 async function latestSitemapFetchState() {
   return sitemapFetchStateFromJob(await latestSitemapFetchJob());
 }
@@ -2648,6 +2681,11 @@ const server = http.createServer(async (request, response) => {
       return;
     }
 
+    if (pathname === '/api/settings/csv-preview' && request.method === 'POST') {
+      await handleCsvPreviewRequest(request, response);
+      return;
+    }
+
     if (!context) {
       try {
         const handledLite = await handleLiteApi(pathname, parsed, request, response);
@@ -2920,36 +2958,7 @@ const server = http.createServer(async (request, response) => {
     }
 
     if (pathname === '/api/settings/csv-preview' && request.method === 'POST') {
-      const body = await readBody(request);
-      const csvText = String(body.csvText ?? body.csv ?? '').trim();
-      const importType = String(body.importType ?? body.type ?? '').trim();
-      if (!csvText) {
-        sendJson(response, 400, { error: 'csvText is required' });
-        return;
-      }
-      if (!['gsc', 'p30_users', 'signup_count'].includes(importType)) {
-        sendJson(response, 400, { error: 'importType must be gsc, p30_users, or signup_count' });
-        return;
-      }
-      const lines = csvText.split(/\r?\n/).filter((line) => line.trim());
-      const previewRows = parseCsv(csvText);
-      const headers = Object.keys(previewRows[0] ?? {});
-      const normalizedHeaders = headers.map((header) => header.trim().toLowerCase());
-      const warnings = [];
-      if (importType === 'gsc' && !normalizedHeaders.some((header) => ['url', 'page', 'landing page', 'landing_page'].includes(header))) {
-        warnings.push('GSC CSV should include a url column.');
-      }
-      if (importType !== 'gsc' && !normalizedHeaders.some((header) => ['path', 'url', 'page', 'landing page', 'landing_page'].includes(header))) {
-        warnings.push('P30/signup wide CSV should include a path or url column.');
-      }
-      sendJson(response, 200, {
-        ok: true,
-        importType,
-        rowCount: previewRows.length,
-        headers,
-        sampleRows: lines.slice(1, 6),
-        warnings
-      });
+      await handleCsvPreviewRequest(request, response);
       return;
     }
 
