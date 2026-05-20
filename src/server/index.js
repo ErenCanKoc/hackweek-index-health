@@ -506,6 +506,8 @@ function compactState(store, options = {}) {
     .sort((a, b) => new Date(b.deletedAt ?? b.updatedAt ?? 0) - new Date(a.deletedAt ?? a.updatedAt ?? 0))
     .slice(0, keep.deletedUrls);
 
+  slimImportBatches(store);
+
   const after = tableCounts(store);
   const removed = Object.fromEntries(Object.keys(before).map((key) => [key, before[key] - (after[key] ?? 0)]));
   return { before, after, removed, keep };
@@ -520,12 +522,47 @@ function businessMetricKey(metric) {
 }
 
 function createImportBatch(store, payload) {
+  const {
+    touchedGscMetricKeys,
+    touchedBusinessMetricKeys,
+    previousGscMetrics,
+    previousBusinessMetrics,
+    ...safePayload
+  } = payload;
   return store.insert('importBatches', {
-    ...payload,
+    ...safePayload,
+    touchedGscMetricCount: safePayload.touchedGscMetricCount ?? touchedGscMetricKeys?.length ?? 0,
+    touchedBusinessMetricCount: safePayload.touchedBusinessMetricCount ?? touchedBusinessMetricKeys?.length ?? 0,
     status: 'applied',
     createdAt: nowIso(),
     updatedAt: nowIso()
   });
+}
+
+function summarizeImportBatch(batch) {
+  return {
+    id: batch.id,
+    importType: batch.importType,
+    importedRows: batch.importedRows ?? 0,
+    urlsAdded: batch.urlsAdded ?? 0,
+    status: batch.status ?? 'unknown',
+    createdAt: batch.createdAt,
+    rolledBackAt: batch.rolledBackAt ?? null,
+    createdUrlCount: batch.createdUrlIds?.length ?? 0,
+    touchedMetricCount: (batch.touchedGscMetricCount ?? batch.touchedGscMetricKeys?.length ?? 0)
+      + (batch.touchedBusinessMetricCount ?? batch.touchedBusinessMetricKeys?.length ?? 0)
+  };
+}
+
+function slimImportBatches(store) {
+  for (const batch of store.state.importBatches ?? []) {
+    batch.touchedGscMetricCount = batch.touchedGscMetricCount ?? batch.touchedGscMetricKeys?.length ?? 0;
+    batch.touchedBusinessMetricCount = batch.touchedBusinessMetricCount ?? batch.touchedBusinessMetricKeys?.length ?? 0;
+    delete batch.touchedGscMetricKeys;
+    delete batch.touchedBusinessMetricKeys;
+    delete batch.previousGscMetrics;
+    delete batch.previousBusinessMetrics;
+  }
 }
 
 function rollbackImportBatch(store, batchId) {
@@ -538,11 +575,19 @@ function rollbackImportBatch(store, batchId) {
   const previousBusiness = new Map((batch.previousBusinessMetrics ?? []).map((row) => [businessMetricKey(row), row]));
   const touchedGscKeys = new Set(batch.touchedGscMetricKeys ?? []);
   const touchedBusinessKeys = new Set(batch.touchedBusinessMetricKeys ?? []);
+  const beforeGscMetrics = store.state.gscPerformanceMetrics.length;
+  const beforeBusinessMetrics = store.state.businessMetrics.length;
 
   store.state.gscPerformanceMetrics = store.state.gscPerformanceMetrics
-    .filter((metric) => !touchedGscKeys.has(gscMetricKey(metric)));
+    .filter((metric) => {
+      if (touchedGscKeys.size) return !touchedGscKeys.has(gscMetricKey(metric));
+      return metric.sourceFile !== batch.sourceName;
+    });
   store.state.businessMetrics = store.state.businessMetrics
-    .filter((metric) => !touchedBusinessKeys.has(businessMetricKey(metric)));
+    .filter((metric) => {
+      if (touchedBusinessKeys.size) return !touchedBusinessKeys.has(businessMetricKey(metric));
+      return metric.sourceFile !== batch.sourceName;
+    });
 
   store.state.gscPerformanceMetrics.push(...previousGsc.values());
   store.state.businessMetrics.push(...previousBusiness.values());
@@ -550,7 +595,10 @@ function rollbackImportBatch(store, batchId) {
   batch.rolledBackAt = nowIso();
   batch.updatedAt = nowIso();
   const restoredMetrics = previousGsc.size + previousBusiness.size;
-  return { batch, deletedUrls, restoredMetrics };
+  const removedMetrics = (beforeGscMetrics - store.state.gscPerformanceMetrics.length)
+    + (beforeBusinessMetrics - store.state.businessMetrics.length)
+    + restoredMetrics;
+  return { batch, deletedUrls, removedMetrics, restoredMetrics };
 }
 
 async function compactPostgresState({ aggressive = false } = {}) {
@@ -779,11 +827,13 @@ async function serveStatic(response, requestPath) {
 async function createAppContext() {
   const context = await createContext();
   context.store.state.deletedUrls ??= [];
+  slimImportBatches(context.store);
   const cleaned = removeSitemapUrlRecords(context.store);
   if (cleaned) await context.store.save();
   if (context.store.state.urls.length === 0) {
     await seedContext({ reset: false });
     const seededContext = await createContext();
+    slimImportBatches(seededContext.store);
     const seededCleaned = removeSitemapUrlRecords(seededContext.store);
     if (seededCleaned) await seededContext.store.save();
     return seededContext;
@@ -800,7 +850,6 @@ function ensureContextReady() {
     contextReady = createAppContext()
       .then(async (loadedContext) => {
         context = loadedContext;
-        await context.store.save();
         return context;
       })
       .catch((error) => {
@@ -813,7 +862,7 @@ function ensureContextReady() {
 }
 
 const cronState = {
-  dailySitemapFetchEnabled: process.env.DAILY_SITEMAP_FETCH_ENABLED !== 'false',
+  dailySitemapFetchEnabled: process.env.DAILY_SITEMAP_FETCH_ENABLED === 'true',
   running: false,
   lastRunAt: null,
   lastResult: null,
@@ -970,7 +1019,11 @@ const server = http.createServer(async (request, response) => {
         inspection: context.config.policy.inspection,
         propertyMappings: context.config.propertyMappings,
         cron: cronState,
-        importBatches: (context.store.state.importBatches ?? []).slice().reverse().slice(0, 20),
+        importBatches: (context.store.state.importBatches ?? [])
+          .slice()
+          .reverse()
+          .slice(0, 20)
+          .map(summarizeImportBatch),
         openAI: openAiStatus(),
         googleAuth: await googleAuthStatus(),
         oauthRedirectUri: `${publicOrigin(parsed.origin)}/auth/google/callback`
@@ -1161,12 +1214,10 @@ const server = http.createServer(async (request, response) => {
       const createdUrlIds = context.store.state.urls
         .filter((url) => !beforeUrlIds.has(Number(url.id)))
         .map((url) => url.id);
-      const touchedGscMetricKeys = context.store.state.gscPerformanceMetrics
-        .filter((metric) => metric.sourceFile === sourceName)
-        .map(gscMetricKey);
-      const touchedBusinessMetricKeys = context.store.state.businessMetrics
-        .filter((metric) => metric.sourceFile === sourceName)
-        .map(businessMetricKey);
+      const touchedGscMetricCount = context.store.state.gscPerformanceMetrics
+        .reduce((count, metric) => count + (metric.sourceFile === sourceName ? 1 : 0), 0);
+      const touchedBusinessMetricCount = context.store.state.businessMetrics
+        .reduce((count, metric) => count + (metric.sourceFile === sourceName ? 1 : 0), 0);
       const thresholds = recalculatePriorities(context.store);
       const batch = createImportBatch(context.store, {
         importType,
@@ -1176,8 +1227,8 @@ const server = http.createServer(async (request, response) => {
         urlsAfter: context.store.state.urls.length,
         urlsAdded: context.store.state.urls.length - beforeUrls,
         createdUrlIds,
-        touchedGscMetricKeys,
-        touchedBusinessMetricKeys
+        touchedGscMetricCount,
+        touchedBusinessMetricCount
       });
       await context.store.save();
       sendJson(response, 200, {
