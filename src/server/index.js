@@ -277,6 +277,16 @@ async function patchAppStateJson(pathSegments, value) {
   return result.rowCount > 0;
 }
 
+async function readAppStateJsonKey(key) {
+  const pool = getLitePool();
+  if (!pool) return null;
+  const result = await pool.query(
+    'SELECT state -> $2 AS value FROM app_state WHERE id = $1',
+    [appStateKey(), key]
+  );
+  return result.rows[0]?.value ?? null;
+}
+
 async function readAppStateArray(key, { limit = null, reverse = false } = {}) {
   const pool = getLitePool();
   if (!pool) return null;
@@ -1683,8 +1693,31 @@ async function reloadRuntimeConfig() {
   if (context) context.config = withStoredSources(await loadConfig(), context.store);
 }
 
+function withRuntimeSources(config, storedSources) {
+  if (!storedSources) return config;
+  return {
+    ...config,
+    sources: {
+      ...config.sources,
+      ...storedSources,
+      sitemapIndexUrls: storedSources.sitemapIndexUrls ?? config.sources.sitemapIndexUrls ?? [],
+      childSitemapUrls: storedSources.childSitemapUrls ?? config.sources.childSitemapUrls ?? [],
+      localSitemapIndexFiles: storedSources.localSitemapIndexFiles ?? config.sources.localSitemapIndexFiles ?? [],
+      manualUrlFiles: storedSources.manualUrlFiles ?? config.sources.manualUrlFiles ?? [],
+      gscCsvFiles: storedSources.gscCsvFiles ?? config.sources.gscCsvFiles ?? [],
+      p30CsvFiles: storedSources.p30CsvFiles ?? config.sources.p30CsvFiles ?? [],
+      signupCsvFiles: storedSources.signupCsvFiles ?? config.sources.signupCsvFiles ?? [],
+      excludedSitemapUrls: storedSources.excludedSitemapUrls ?? config.sources.excludedSitemapUrls ?? []
+    }
+  };
+}
+
 async function loadEffectiveConfigForSettings() {
   if (context?.store) return withStoredSources(await loadConfig(), context.store);
+  if (process.env.DATABASE_URL) {
+    const storedSources = await readAppStateJsonKey('configSources');
+    return withRuntimeSources(await loadConfig(), storedSources);
+  }
   const store = await loadStore();
   return withStoredSources(await loadConfig(), store);
 }
