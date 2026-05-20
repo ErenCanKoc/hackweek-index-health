@@ -187,6 +187,27 @@ You can also connect direct child sitemaps:
 
 When `fetchChildSitemaps` is `true`, the engine fetches each child sitemap and imports real `<url><loc>...</loc></url>` entries. The sample config keeps this off so the repo works offline with demo URLs.
 
+Adcraft detection is based on the sitemap URL, not the page URL. A page URL imported from a sitemap such as `https://www.jotform.com/sitemaps/form-templates/en.adcraft.sitemap.xml` is marked as `isScaledContent=true` and `scaledContentType=adcraft` even if the page URL itself does not contain `adcraft`.
+
+### Daily cron endpoint
+
+For free hosting that can sleep, trigger the daily work from an external scheduler such as GitHub Actions or cron-job.org:
+
+```bash
+curl --request POST \
+  --header "x-cron-secret: $CRON_SECRET" \
+  --header "content-type: application/json" \
+  --data '{"limit":500}' \
+  https://hackweek-index-health.onrender.com/api/cron/daily
+```
+
+Set these environment/secrets:
+
+- Render: `CRON_SECRET`
+- GitHub Actions repository secrets: `CRON_SECRET` and `CRON_URL=https://hackweek-index-health.onrender.com/api/cron/daily`
+
+The included `.github/workflows/daily-cron.yml` runs every day at `03:00 UTC` and can also be run manually from GitHub Actions.
+
 ### 3. Manual URL entry
 
 Put one-off URLs in `data/imports/manual-urls.csv`:

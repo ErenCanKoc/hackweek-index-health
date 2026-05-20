@@ -66,6 +66,12 @@ assert.equal(store.state.urls.length > 0, true);
 
 const scaled = store.state.urls.find((url) => url.isScaledContent);
 assert.ok(scaled, 'expected a scaled content URL');
+assert.equal(scaled.scaledContentType, 'adcraft');
+assert.equal(scaled.normalizedUrl.includes('adcraft'), false);
+assert.ok(
+  store.state.urlSources.some((source) => source.urlId === scaled.id && source.sourceSitemapUrl?.includes('adcraft')),
+  'expected scaled content URL to inherit adcraft from source sitemap'
+);
 const eligible = resolveEligibleProperties(store, scaled);
 assert.equal(eligible[0].propertyUrl, 'https://www.jotform.com/form-templates/');
 

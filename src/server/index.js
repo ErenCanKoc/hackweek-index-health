@@ -54,6 +54,17 @@ function isAuthEnabled() {
   return authPassword().length > 0;
 }
 
+function cronSecret() {
+  return String(process.env.CRON_SECRET ?? '').trim();
+}
+
+function isCronAuthorized(parsed, request) {
+  const expected = cronSecret();
+  if (!expected) return false;
+  const supplied = request.headers['x-cron-secret'] || parsed.searchParams.get('secret');
+  return safeEqual(String(supplied ?? ''), expected);
+}
+
 function authSecret() {
   return process.env.AUTH_SESSION_SECRET || process.env.SESSION_SECRET || authPassword();
 }
@@ -539,6 +550,28 @@ const server = http.createServer(async (request, response) => {
 
     if (pathname === '/api/health') {
       sendJson(response, 200, { ok: true, now: nowIso() });
+      return;
+    }
+
+    if (pathname === '/api/cron/daily' && request.method === 'POST') {
+      if (!isCronAuthorized(parsed, request)) {
+        sendJson(response, 401, { error: 'Invalid or missing cron secret' });
+        return;
+      }
+      const body = await readBody(request);
+      const fetchResult = await runDailySitemapFetchCron('external_cron');
+      const schedulerSummary = await runScheduler(context.store, context.config, {
+        limit: Number(body.limit ?? parsed.searchParams.get('limit') ?? process.env.DAILY_CRON_SCHEDULER_LIMIT ?? 500),
+        force: Boolean(body.force)
+      });
+      await context.store.save();
+      sendJson(response, 200, {
+        ok: true,
+        now: nowIso(),
+        fetchResult,
+        schedulerSummary,
+        cron: cronState
+      });
       return;
     }
 

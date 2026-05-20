@@ -1,0 +1,18 @@
+name: Daily index health cron
+
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+jobs:
+  daily-cron:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger daily sitemap fetch and scheduler
+        run: |
+          curl --fail-with-body --request POST \
+            --header "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
+            --header "content-type: application/json" \
+            --data '{"limit":500}' \
+            "${{ secrets.CRON_URL }}"
