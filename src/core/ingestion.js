@@ -24,6 +24,20 @@ function categoryFromPath(path) {
   return 'pages';
 }
 
+async function mapWithConcurrency(items, limit, mapper) {
+  const results = new Array(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.max(1, Math.min(Number(limit) || 1, items.length || 1));
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await mapper(items[index], index);
+    }
+  }));
+  return results;
+}
+
 export function upsertUrl(store, values) {
   const now = nowIso();
   const normalizedUrl = normalizeUrl(values.url);
@@ -157,7 +171,8 @@ export async function ingestConfiguredSitemaps(store, config, resolvePath, optio
     store.state.urlSources.map((source) => [`${source.urlId}|${source.sourceType}|${source.sourceIdentifier}`, source])
   );
 
-  const fetchedSitemaps = await Promise.all(sitemapUrls.map(async (sitemapUrl) => {
+  const fetchConcurrency = Math.max(1, Math.min(Number(options.fetchConcurrency ?? process.env.SITEMAP_FETCH_CONCURRENCY ?? 6), 20));
+  const fetchedSitemaps = await mapWithConcurrency(sitemapUrls, fetchConcurrency, async (sitemapUrl) => {
     const sitemapInfo = classifySitemap(sitemapUrl, config.policy);
     let urlEntries = [];
     let lastFetchStatus = 'child_fetch_off';
@@ -180,7 +195,7 @@ export async function ingestConfiguredSitemaps(store, config, resolvePath, optio
     }
 
     return { sitemapUrl, sitemapInfo, urlEntries, lastFetchStatus, lastSuccessfulFetchAt };
-  }));
+  });
 
   const fetchFailures = fetchedSitemaps.filter((item) => item.lastFetchStatus.startsWith('fetch_failed'));
   if (fetchFailures.length && !sources.useDemoUrlsWhenChildFetchFails) {

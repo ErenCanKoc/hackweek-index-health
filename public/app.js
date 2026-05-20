@@ -633,7 +633,7 @@ async function loadRoadmap() {
 
 async function loadSettings() {
   const manualSearch = document.querySelector('#manual-overrides-search')?.value?.trim() ?? '';
-  const manualParams = new URLSearchParams({ limit: '200' });
+  const manualParams = new URLSearchParams({ limit: '200', includeSources: 'true' });
   if (manualSearch) manualParams.set('q', manualSearch);
   const [urlData, settings, sitemaps] = await Promise.all([api(`/api/urls?${manualParams}`), api('/api/settings'), api('/api/sitemaps')]);
   const urls = urlData.rows ?? urlData;
@@ -1128,11 +1128,39 @@ document.querySelector('#delete-selected-fetched-sitemaps').addEventListener('cl
 });
 
 document.querySelector('#fetch-sitemaps').addEventListener('click', async () => {
-  setStatus('Fetching sitemap URLs...');
-  const result = await api('/api/actions/fetch-sitemaps', { method: 'POST', body: '{}' });
-  await refresh();
-  const summary = result.fetchSummary ?? { success: 0, failed: 0, pending: 0, total: result.counts.sitemapCount };
-  setStatus(`Fetched ${summary.success}/${summary.total} sitemaps, failed ${summary.failed}, imported ${result.counts.urlCount} page URLs, cleaned ${result.cleanedSitemapUrlRecords} sitemap URL records. URL list is now ${result.urlsAfter}.`);
+  try {
+    setStatus('Starting sitemap fetch...');
+    const result = await api('/api/actions/fetch-sitemaps', { method: 'POST', timeoutMs: 10000, body: '{}' });
+    if (result.sitemapFetch) {
+      setStatus(result.message ?? 'Sitemap fetch started.');
+      for (let attempt = 0; attempt < 6; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 5000));
+        const status = await api('/api/actions/fetch-sitemaps/status', { timeoutMs: 10000 });
+        if (status.sitemapFetch?.running) {
+          setStatus(`Sitemap fetch running since ${fmtDate(status.sitemapFetch.startedAt)}...`);
+          continue;
+        }
+        if (status.sitemapFetch?.lastError) {
+          setStatus(`Sitemap fetch failed: ${status.sitemapFetch.lastError}`);
+          return;
+        }
+        if (status.sitemapFetch?.lastResult) {
+          const done = status.sitemapFetch.lastResult;
+          const summary = done.fetchSummary ?? { success: 0, failed: 0, pending: 0, total: done.counts?.sitemapCount ?? 0 };
+          await refresh();
+          setStatus(`Fetched ${summary.success}/${summary.total} sitemaps, failed ${summary.failed}, imported ${done.counts.urlCount} page URLs. URL list is now ${done.urlsAfter}.`);
+          return;
+        }
+      }
+      setStatus('Sitemap fetch is still running in the background. Check the sitemap log again shortly.');
+      return;
+    }
+    const summary = result.fetchSummary ?? { success: 0, failed: 0, pending: 0, total: result.counts.sitemapCount };
+    await refresh();
+    setStatus(`Fetched ${summary.success}/${summary.total} sitemaps, failed ${summary.failed}, imported ${result.counts.urlCount} page URLs, cleaned ${result.cleanedSitemapUrlRecords} sitemap URL records. URL list is now ${result.urlsAfter}.`);
+  } catch (error) {
+    setStatus(`Sitemap fetch failed to start: ${error.message}`);
+  }
 });
 
 document.querySelector('#sync-gsc-properties').addEventListener('click', async () => {

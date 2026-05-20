@@ -16,11 +16,17 @@ CREATE TABLE IF NOT EXISTS dashboard_urls (
   next_inspection_due_at TIMESTAMPTZ,
   first_seen_at TIMESTAMPTZ,
   last_seen_at TIMESTAMPTZ,
-  row_json JSONB NOT NULL,
+  source_sitemaps JSONB NOT NULL DEFAULT '[]'::jsonb,
+  source_text TEXT NOT NULL DEFAULT '',
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 ALTER TABLE public.dashboard_urls ENABLE ROW LEVEL SECURITY;
+ALTER TABLE dashboard_urls DROP COLUMN IF EXISTS row_json;
+ALTER TABLE dashboard_urls ADD COLUMN IF NOT EXISTS source_sitemaps JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE dashboard_urls ADD COLUMN IF NOT EXISTS source_text TEXT NOT NULL DEFAULT '';
+DROP INDEX IF EXISTS idx_dashboard_urls_normalized;
+DROP INDEX IF EXISTS idx_dashboard_urls_source_text;
 
 CREATE INDEX IF NOT EXISTS idx_dashboard_urls_priority
   ON dashboard_urls (current_priority_tier, id);
@@ -30,9 +36,6 @@ CREATE INDEX IF NOT EXISTS idx_dashboard_urls_category
 
 CREATE INDEX IF NOT EXISTS idx_dashboard_urls_scaled
   ON dashboard_urls (is_scaled_content, id);
-
-CREATE INDEX IF NOT EXISTS idx_dashboard_urls_normalized
-  ON dashboard_urls (normalized_url);
 
 CREATE TABLE IF NOT EXISTS dashboard_properties (
   id BIGINT PRIMARY KEY,
@@ -51,7 +54,7 @@ INSERT INTO dashboard_urls (
   id, normalized_url, url, category, locale, current_priority_tier,
   current_index_state, current_health_state, is_scaled_content,
   is_manually_excluded, is_active, next_inspection_due_at,
-  first_seen_at, last_seen_at, row_json, updated_at
+  first_seen_at, last_seen_at, source_sitemaps, source_text, updated_at
 )
 SELECT
   (elem ->> 'id')::bigint,
@@ -68,7 +71,8 @@ SELECT
   NULLIF(elem ->> 'nextInspectionDueAt', '')::timestamptz,
   NULLIF(elem ->> 'firstSeenAt', '')::timestamptz,
   NULLIF(elem ->> 'lastSeenAt', '')::timestamptz,
-  elem,
+  '[]'::jsonb,
+  '',
   now()
 FROM app_state,
   jsonb_array_elements(COALESCE(state -> 'urls', '[]'::jsonb)) AS rows(elem)
@@ -88,7 +92,8 @@ SET normalized_url = EXCLUDED.normalized_url,
     next_inspection_due_at = EXCLUDED.next_inspection_due_at,
     first_seen_at = EXCLUDED.first_seen_at,
     last_seen_at = EXCLUDED.last_seen_at,
-    row_json = EXCLUDED.row_json,
+    source_sitemaps = EXCLUDED.source_sitemaps,
+    source_text = EXCLUDED.source_text,
     updated_at = now();
 
 INSERT INTO dashboard_properties (id, property_url, row_json, updated_at)

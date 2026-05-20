@@ -307,6 +307,25 @@ async function readAppStateMeta() {
   return result.rows[0] ?? null;
 }
 
+async function readDashboardCacheMeta() {
+  const pool = getLitePool();
+  if (!pool) return null;
+  try {
+    const result = await pool.query(`
+      SELECT
+        (SELECT COUNT(*)::int FROM dashboard_urls) AS cached_urls,
+        (SELECT COUNT(*)::int FROM dashboard_properties) AS cached_properties,
+        pg_total_relation_size('dashboard_urls')::int AS dashboard_urls_bytes,
+        pg_total_relation_size('dashboard_properties')::int AS dashboard_properties_bytes,
+        pg_size_pretty(pg_total_relation_size('dashboard_urls')) AS dashboard_urls_size,
+        pg_size_pretty(pg_total_relation_size('dashboard_properties')) AS dashboard_properties_size
+    `);
+    return result.rows[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
 async function readAppStateObject() {
   const pool = getLitePool();
   if (!pool) return null;
@@ -536,9 +555,16 @@ async function ensureDashboardCacheTables() {
       next_inspection_due_at TIMESTAMPTZ,
       first_seen_at TIMESTAMPTZ,
       last_seen_at TIMESTAMPTZ,
-      row_json JSONB NOT NULL,
+      source_sitemaps JSONB NOT NULL DEFAULT '[]'::jsonb,
+      source_text TEXT NOT NULL DEFAULT '',
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
+
+    ALTER TABLE dashboard_urls DROP COLUMN IF EXISTS row_json;
+    ALTER TABLE dashboard_urls ADD COLUMN IF NOT EXISTS source_sitemaps JSONB NOT NULL DEFAULT '[]'::jsonb;
+    ALTER TABLE dashboard_urls ADD COLUMN IF NOT EXISTS source_text TEXT NOT NULL DEFAULT '';
+    DROP INDEX IF EXISTS idx_dashboard_urls_normalized;
+    DROP INDEX IF EXISTS idx_dashboard_urls_source_text;
 
     CREATE INDEX IF NOT EXISTS idx_dashboard_urls_priority
       ON dashboard_urls (current_priority_tier, id);
@@ -546,8 +572,6 @@ async function ensureDashboardCacheTables() {
       ON dashboard_urls (category, locale, id);
     CREATE INDEX IF NOT EXISTS idx_dashboard_urls_scaled
       ON dashboard_urls (is_scaled_content, id);
-    CREATE INDEX IF NOT EXISTS idx_dashboard_urls_normalized
-      ON dashboard_urls (normalized_url);
 
     CREATE TABLE IF NOT EXISTS dashboard_properties (
       id BIGINT PRIMARY KEY,
@@ -584,7 +608,8 @@ async function refreshDashboardCache() {
           next_inspection_due_at,
           first_seen_at,
           last_seen_at,
-          row_json,
+          source_sitemaps,
+          source_text,
           updated_at
         )
         SELECT
@@ -602,7 +627,8 @@ async function refreshDashboardCache() {
           NULLIF(elem ->> 'nextInspectionDueAt', '')::timestamptz,
           NULLIF(elem ->> 'firstSeenAt', '')::timestamptz,
           NULLIF(elem ->> 'lastSeenAt', '')::timestamptz,
-          elem,
+          '[]'::jsonb,
+          '',
           now()
         FROM app_state,
           jsonb_array_elements(COALESCE(state -> 'urls', '[]'::jsonb)) AS rows(elem)
@@ -622,7 +648,8 @@ async function refreshDashboardCache() {
               next_inspection_due_at = EXCLUDED.next_inspection_due_at,
               first_seen_at = EXCLUDED.first_seen_at,
               last_seen_at = EXCLUDED.last_seen_at,
-              row_json = EXCLUDED.row_json,
+              source_sitemaps = EXCLUDED.source_sitemaps,
+              source_text = EXCLUDED.source_text,
               updated_at = now()
       `,
       [appStateKey]
@@ -669,6 +696,27 @@ async function cachedTableCount(tableName) {
   }
 }
 
+async function readLiteSourcesForUrlIds(urlIds) {
+  const pool = getLitePool();
+  if (!pool || !urlIds.length) return new Map();
+  const appStateKey = process.env.APP_STATE_KEY || 'default';
+  const result = await pool.query(
+    `
+      SELECT
+        (elem ->> 'urlId')::bigint AS url_id,
+        jsonb_agg(elem ORDER BY ord) AS sources
+      FROM app_state,
+        jsonb_array_elements(COALESCE(state -> 'urlSources', '[]'::jsonb)) WITH ORDINALITY AS rows(elem, ord)
+      WHERE id = $1
+        AND elem ? 'urlId'
+        AND (elem ->> 'urlId')::bigint = ANY($2::bigint[])
+      GROUP BY (elem ->> 'urlId')::bigint
+    `,
+    [appStateKey, urlIds]
+  );
+  return new Map(result.rows.map((row) => [Number(row.url_id), row.sources ?? []]));
+}
+
 async function readCachedUrlPage(filters) {
   const pool = getLitePool();
   if (!pool) return null;
@@ -698,7 +746,22 @@ async function readCachedUrlPage(filters) {
   const countResult = await pool.query(`SELECT COUNT(*)::int AS total FROM dashboard_urls ${whereSql}`, params);
   const rowsResult = await pool.query(
     `
-      SELECT row_json
+      SELECT
+        id,
+        normalized_url,
+        url,
+        category,
+        locale,
+        current_priority_tier,
+        current_index_state,
+        current_health_state,
+        is_scaled_content,
+        is_manually_excluded,
+        is_active,
+        next_inspection_due_at,
+        first_seen_at,
+        last_seen_at,
+        source_sitemaps
       FROM dashboard_urls
       ${whereSql}
       ORDER BY id ASC
@@ -708,8 +771,30 @@ async function readCachedUrlPage(filters) {
     params
   );
   const total = Number(countResult.rows[0]?.total ?? 0);
+  const rows = rowsResult.rows.map((row) => ({
+      id: Number(row.id),
+      normalizedUrl: row.normalized_url,
+      url: row.url,
+      category: row.category,
+      locale: row.locale,
+      currentPriorityTier: row.current_priority_tier,
+      currentIndexState: row.current_index_state,
+      currentHealthState: row.current_health_state,
+      isScaledContent: row.is_scaled_content,
+      isManuallyExcluded: row.is_manually_excluded,
+      isActive: row.is_active,
+      nextInspectionDueAt: row.next_inspection_due_at,
+      firstSeenAt: row.first_seen_at,
+      lastSeenAt: row.last_seen_at,
+      sources: row.source_sitemaps ?? [],
+      activeAlerts: []
+    }));
+  if (filters.includeSources === 'true') {
+    const sourcesByUrlId = await readLiteSourcesForUrlIds(rows.map((row) => row.id));
+    for (const row of rows) row.sources = sourcesByUrlId.get(row.id) ?? [];
+  }
   return {
-    rows: rowsResult.rows.map((row) => row.row_json),
+    rows,
     total,
     limit,
     offset,
@@ -1303,6 +1388,23 @@ async function handleLiteApi(pathname, parsed, request, response) {
   if (pathname === '/api/settings/maintenance/sync-cache' && request.method === 'POST') {
     const cache = await refreshDashboardCache();
     sendJson(response, 200, { ok: true, cache, lite: true });
+    return true;
+  }
+
+  if (pathname === '/api/actions/fetch-sitemaps/status') {
+    sendJson(response, 200, { ok: true, sitemapFetch: sitemapFetchState, lite: true });
+    return true;
+  }
+
+  if (pathname === '/api/actions/fetch-sitemaps' && request.method === 'POST') {
+    const body = await readBody(request);
+    const result = await startSitemapFetchAction(body, parsed);
+    sendJson(response, result.alreadyRunning ? 200 : 202, {
+      ok: result.accepted || result.alreadyRunning,
+      message: result.alreadyRunning ? 'Sitemap fetch is already running.' : 'Sitemap fetch started in the background.',
+      sitemapFetch: result.state,
+      lite: true
+    });
     return true;
   }
 
@@ -2060,6 +2162,72 @@ const cronState = {
   lastError: null
 };
 
+const sitemapFetchState = {
+  running: false,
+  startedAt: null,
+  finishedAt: null,
+  lastResult: null,
+  lastError: null
+};
+
+async function runSitemapFetchAction(body = {}, parsed = null) {
+  await ensureContextReady();
+  if (!context) throw contextError ?? new Error('App context is not ready.');
+  const beforeUrls = context.store.state.urls.length;
+  const cleanedBefore = removeSitemapUrlRecords(context.store);
+  const counts = await ingestConfiguredSitemaps(context.store, context.config, context.resolvePath, {
+    includeLocal: false,
+    fetchChildSitemaps: true,
+    useDemoUrlsWhenChildFetchIsOff: false,
+    useDemoUrlsWhenChildFetchFails: false
+  });
+  const cleanedAfter = removeSitemapUrlRecords(context.store);
+  const shouldRecalculatePriorities = body.recalculatePriorities === true
+    || parsed?.searchParams?.get('recalculatePriorities') === 'true';
+  const thresholds = shouldRecalculatePriorities ? recalculatePriorities(context.store) : null;
+  const fetchLog = sitemapFetchLog(context.store);
+  await context.store.save();
+  return {
+    ok: true,
+    counts,
+    fetchSummary: {
+      success: fetchLog.filter((row) => row.health === 'success').length,
+      failed: fetchLog.filter((row) => row.health === 'failed').length,
+      pending: fetchLog.filter((row) => row.health === 'pending').length,
+      total: fetchLog.length
+    },
+    cleanedSitemapUrlRecords: cleanedBefore + cleanedAfter,
+    urlsBefore: beforeUrls,
+    urlsAfter: context.store.state.urls.length,
+    urlsAddedOrUpdated: counts.urlCount,
+    priorityRecalculated: shouldRecalculatePriorities,
+    thresholds
+  };
+}
+
+async function startSitemapFetchAction(body = {}, parsed = null) {
+  if (sitemapFetchState.running) return { accepted: false, alreadyRunning: true, state: sitemapFetchState };
+  sitemapFetchState.running = true;
+  sitemapFetchState.startedAt = nowIso();
+  sitemapFetchState.finishedAt = null;
+  sitemapFetchState.lastError = null;
+  sitemapFetchState.lastResult = null;
+  runSitemapFetchAction(body, parsed)
+    .then(async (result) => {
+      sitemapFetchState.lastResult = result;
+      await refreshDashboardCache().catch((error) => console.error('Dashboard cache refresh failed after sitemap fetch:', error.message));
+    })
+    .catch((error) => {
+      sitemapFetchState.lastError = error.message;
+      console.error('Sitemap fetch failed:', error);
+    })
+    .finally(() => {
+      sitemapFetchState.running = false;
+      sitemapFetchState.finishedAt = nowIso();
+    });
+  return { accepted: true, alreadyRunning: false, state: sitemapFetchState };
+}
+
 async function runDailySitemapFetchCron(reason = 'daily_cron') {
   if (!cronState.dailySitemapFetchEnabled || cronState.running) return null;
   cronState.running = true;
@@ -2128,7 +2296,8 @@ const server = http.createServer(async (request, response) => {
     }
 
     if (pathname === '/api/health/state') {
-      sendJson(response, 200, { ok: true, state: await readAppStateMeta(), contextLoad: contextLoadInfo });
+      const [state, dashboardCache] = await Promise.all([readAppStateMeta(), readDashboardCacheMeta()]);
+      sendJson(response, 200, { ok: true, state, dashboardCache, contextLoad: contextLoadInfo });
       return;
     }
 
@@ -2402,36 +2571,11 @@ const server = http.createServer(async (request, response) => {
 
     if (pathname === '/api/actions/fetch-sitemaps' && request.method === 'POST') {
       const body = await readBody(request);
-      const beforeUrls = context.store.state.urls.length;
-      const cleanedBefore = removeSitemapUrlRecords(context.store);
-      const counts = await ingestConfiguredSitemaps(context.store, context.config, context.resolvePath, {
-        includeLocal: false,
-        fetchChildSitemaps: true,
-        useDemoUrlsWhenChildFetchIsOff: false,
-        useDemoUrlsWhenChildFetchFails: false
-      });
-      const cleanedAfter = removeSitemapUrlRecords(context.store);
-      const shouldRecalculatePriorities = body.recalculatePriorities === true
-        || parsed.searchParams.get('recalculatePriorities') === 'true';
-      const thresholds = shouldRecalculatePriorities ? recalculatePriorities(context.store) : null;
-      const fetchLog = sitemapFetchLog(context.store);
-      await context.store.save();
-      sendJson(response, 200, {
-        ok: true,
-        counts,
-        fetchSummary: {
-          success: fetchLog.filter((row) => row.health === 'success').length,
-          failed: fetchLog.filter((row) => row.health === 'failed').length,
-          pending: fetchLog.filter((row) => row.health === 'pending').length,
-          total: fetchLog.length
-        },
-        cleanedSitemapUrlRecords: cleanedBefore + cleanedAfter,
-        urlsBefore: beforeUrls,
-        urlsAfter: context.store.state.urls.length,
-        urlsAddedOrUpdated: counts.urlCount,
-        priorityRecalculated: shouldRecalculatePriorities,
-        thresholds
-      });
+      const result = await runSitemapFetchAction(body, parsed);
+      sitemapFetchState.lastResult = result;
+      sitemapFetchState.lastError = null;
+      sitemapFetchState.finishedAt = nowIso();
+      sendJson(response, 200, result);
       return;
     }
 
