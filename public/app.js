@@ -93,6 +93,10 @@ function esc(value) {
     .replaceAll("'", '&#039;');
 }
 
+function urlPreviewLink(url, label = url) {
+  return `<a class="url-preview-link" href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(label)}</a>`;
+}
+
 function fmtDate(value) {
   if (!value) return '-';
   return new Date(value).toLocaleString();
@@ -425,7 +429,7 @@ async function loadUrls() {
     urls.flatMap((url) => [`
       <tr>
         <td><input type="checkbox" data-select-url="${url.id}" ${state.selectedUrlIds.has(Number(url.id)) ? 'checked' : ''}></td>
-        <td><code>${url.normalizedUrl}</code></td>
+        <td><code>${urlPreviewLink(url.normalizedUrl)}</code></td>
         <td><select class="inline-select" data-url-field="priorityTier" data-url-id="${url.id}">${tierOptions(url.currentPriorityTier)}</select></td>
         <td>${url.currentIndexState}</td>
         <td>${pill(url.health?.currentSeverity ?? url.currentHealthState)}</td>
@@ -441,6 +445,7 @@ async function loadUrls() {
         <td>
           <div class="row-actions">
             <button class="small-button" data-detail="${url.id}">${Number(state.openUrlId) === Number(url.id) ? 'Close' : 'Open'}</button>
+            <a class="small-button" href="${esc(url.normalizedUrl)}" target="_blank" rel="noopener noreferrer">Preview</a>
             <button class="small-button" data-inspect-now="${url.id}">Inspect</button>
             <button class="small-button" data-exclude="${url.id}">${url.isManuallyExcluded ? 'Include' : 'Exclude'}</button>
           </div>
@@ -465,7 +470,7 @@ function detailRow(detail) {
         <div class="detail-drawer inline-detail">
           <div class="detail-head">
             <div>
-              <h2>${detail.url.normalizedUrl}</h2>
+              <h2>${urlPreviewLink(detail.url.normalizedUrl)}</h2>
               <p>${detail.url.category} · ${detail.url.locale ?? 'default'} · ${detail.url.currentIndexState}</p>
             </div>
             <div class="detail-head-status">
@@ -843,7 +848,7 @@ async function loadSettings() {
     ['URL', 'Source Sitemap', 'Tier', 'Active', 'Manual', 'Action'],
     manualRows.map((url) => `
       <tr>
-        <td><code>${url.normalizedUrl}</code></td>
+        <td><code>${urlPreviewLink(url.normalizedUrl)}</code></td>
         <td>${sourceSitemapCell(url)}</td>
         <td>${pill(url.currentPriorityTier)}</td>
         <td>${url.isActive ? 'yes' : 'no'}</td>
