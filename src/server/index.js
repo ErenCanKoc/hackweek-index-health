@@ -492,8 +492,19 @@ async function createAppContext() {
   return context;
 }
 
-let context = await createAppContext();
-await context.store.save();
+let context = null;
+let contextError = null;
+const contextReady = createAppContext()
+  .then(async (loadedContext) => {
+    context = loadedContext;
+    await context.store.save();
+    return context;
+  })
+  .catch((error) => {
+    contextError = error;
+    console.error('Failed to initialize app context:', error);
+    return null;
+  });
 
 const cronState = {
   dailySitemapFetchEnabled: process.env.DAILY_SITEMAP_FETCH_ENABLED !== 'false',
@@ -508,6 +519,8 @@ async function runDailySitemapFetchCron(reason = 'daily_cron') {
   cronState.running = true;
   cronState.lastRunAt = nowIso();
   try {
+    await contextReady;
+    if (!context) throw contextError ?? new Error('App context is not ready.');
     const cleanedBefore = removeSitemapUrlRecords(context.store);
     const counts = await ingestConfiguredSitemaps(context.store, context.config, context.resolvePath, {
       includeLocal: false,
@@ -549,13 +562,24 @@ const server = http.createServer(async (request, response) => {
     const pathname = parsed.pathname;
 
     if (pathname === '/api/health') {
-      sendJson(response, 200, { ok: true, now: nowIso() });
+      sendJson(response, 200, {
+        ok: true,
+        ready: Boolean(context),
+        loading: !context && !contextError,
+        error: contextError?.message ?? null,
+        now: nowIso()
+      });
       return;
     }
 
     if (pathname === '/api/cron/daily' && request.method === 'POST') {
       if (!isCronAuthorized(parsed, request)) {
         sendJson(response, 401, { error: 'Invalid or missing cron secret' });
+        return;
+      }
+      await contextReady;
+      if (!context) {
+        sendJson(response, 503, { error: contextError?.message ?? 'App context is not ready.' });
         return;
       }
       const body = await readBody(request);
@@ -609,6 +633,12 @@ const server = http.createServer(async (request, response) => {
       } else {
         redirect(response, '/login');
       }
+      return;
+    }
+
+    await contextReady;
+    if (!context) {
+      sendJson(response, 503, { error: contextError?.message ?? 'App context is not ready.' });
       return;
     }
 
