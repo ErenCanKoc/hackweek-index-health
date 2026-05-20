@@ -307,6 +307,99 @@ async function readAppStateMeta() {
   return result.rows[0] ?? null;
 }
 
+async function readAppStateObject() {
+  const pool = getLitePool();
+  if (!pool) return null;
+  const appStateKey = process.env.APP_STATE_KEY || 'default';
+  const result = await pool.query('SELECT state FROM app_state WHERE id = $1', [appStateKey]);
+  return result.rows[0]?.state ?? null;
+}
+
+async function writeAppStateObject(state) {
+  const pool = getLitePool();
+  if (!pool) return null;
+  const appStateKey = process.env.APP_STATE_KEY || 'default';
+  state.meta ??= {};
+  state.meta.updatedAt = nowIso();
+  await pool.query(
+    `
+      UPDATE app_state
+      SET state = $2::jsonb,
+          updated_at = now()
+      WHERE id = $1
+    `,
+    [appStateKey, JSON.stringify(state)]
+  );
+  return state;
+}
+
+function countStateArrays(state) {
+  return Object.fromEntries(Object.entries(state ?? {})
+    .filter(([, value]) => Array.isArray(value))
+    .map(([key, value]) => [key, value.length]));
+}
+
+function purgeUrlIdsFromStateObject(state, urlIds) {
+  const idSet = new Set([...urlIds].map(Number));
+  const before = state.urls?.length ?? 0;
+  state.urls = (state.urls ?? []).filter((url) => !idSet.has(Number(url.id)));
+  for (const key of [
+    'urlSources',
+    'prioritySnapshots',
+    'inspectionJobs',
+    'inspectionResults',
+    'stateTransitions',
+    'technicalChecks',
+    'healthStatuses',
+    'alerts',
+    'gscPerformanceMetrics',
+    'businessMetrics'
+  ]) {
+    state[key] = (state[key] ?? []).filter((row) => !idSet.has(Number(row.urlId)));
+  }
+  return before - state.urls.length;
+}
+
+function cleanupStateObject(state, options = {}) {
+  const before = countStateArrays(state);
+  const existingUrlIds = new Set((state.urls ?? []).map((url) => Number(url.id)));
+  const linkedUrlIds = new Set((state.urlSources ?? [])
+    .filter((source) => existingUrlIds.has(Number(source.urlId)))
+    .map((source) => Number(source.urlId)));
+  const protectedUrlIds = new Set();
+  for (const key of ['inspectionResults', 'gscPerformanceMetrics', 'businessMetrics', 'technicalChecks']) {
+    for (const row of state[key] ?? []) protectedUrlIds.add(Number(row.urlId));
+  }
+  for (const alert of state.alerts ?? []) {
+    if (alert.status === 'active') protectedUrlIds.add(Number(alert.urlId));
+  }
+  const orphanUrlIds = (state.urls ?? [])
+    .filter((url) => !linkedUrlIds.has(Number(url.id)) && !protectedUrlIds.has(Number(url.id)))
+    .map((url) => Number(url.id));
+
+  const deletedOrphanUrls = options.removeOrphanUrls === false ? 0 : purgeUrlIdsFromStateObject(state, orphanUrlIds);
+  const remainingUrlIds = new Set((state.urls ?? []).map((url) => Number(url.id)));
+  state.urlSources = (state.urlSources ?? []).filter((source) => remainingUrlIds.has(Number(source.urlId)));
+  state.prioritySnapshots = options.clearPrioritySnapshots === false
+    ? (state.prioritySnapshots ?? []).filter((snapshot) => remainingUrlIds.has(Number(snapshot.urlId)))
+    : [];
+  const after = countStateArrays(state);
+  return {
+    before,
+    after,
+    removed: Object.fromEntries(Object.keys(before).map((key) => [key, before[key] - (after[key] ?? 0)])),
+    deletedOrphanUrls
+  };
+}
+
+async function cleanupPostgresState(options = {}) {
+  const state = await readAppStateObject();
+  if (!state) throw new Error('app_state row not found.');
+  const result = cleanupStateObject(state, options);
+  await writeAppStateObject(state);
+  return result;
+}
+
 function liteScaledDashboardFromArrays(urls, alerts) {
   const tabLimit = 200;
   const scaled = urls.filter((url) => url.isScaledContent && !url.isManuallyExcluded);
@@ -527,6 +620,16 @@ async function handleLiteApi(pathname, parsed, request, response) {
     return true;
   }
 
+  if (pathname === '/api/settings/maintenance/cleanup-orphans' && request.method === 'POST') {
+    const body = await readBody(request);
+    const result = await cleanupPostgresState({
+      removeOrphanUrls: body.removeOrphanUrls !== false,
+      clearPrioritySnapshots: body.clearPrioritySnapshots !== false
+    });
+    sendJson(response, 200, { ok: true, result, lite: true });
+    return true;
+  }
+
   if (pathname === '/api/settings/gsc-sites') {
     sendJson(response, 200, {
       ok: true,
@@ -719,29 +822,8 @@ async function importGscProperties(propertyInputs) {
   return { imported, skipped, propertyMappings: mappings };
 }
 
-function removeUrlData(store, urlIds) {
+function purgeUrlData(store, urlIds) {
   const idSet = new Set(urlIds.map(Number));
-  const now = nowIso();
-  for (const url of store.state.urls.filter((row) => idSet.has(Number(row.id)))) {
-    store.upsert(
-      'deletedUrls',
-      (row) => row.normalizedUrl === url.normalizedUrl,
-      {
-        normalizedUrl: url.normalizedUrl,
-        originalUrl: url.url,
-        deletedAt: now,
-        reason: 'manual_delete',
-        createdAt: now,
-        updatedAt: now
-      },
-      {
-        originalUrl: url.url,
-        deletedAt: now,
-        reason: 'manual_delete',
-        updatedAt: now
-      }
-    );
-  }
   const before = store.state.urls.length;
   store.state.urls = store.state.urls.filter((url) => !idSet.has(Number(url.id)));
   store.state.urlSources = store.state.urlSources.filter((row) => !idSet.has(Number(row.urlId)));
@@ -755,6 +837,50 @@ function removeUrlData(store, urlIds) {
   store.state.gscPerformanceMetrics = store.state.gscPerformanceMetrics.filter((row) => !idSet.has(Number(row.urlId)));
   store.state.businessMetrics = store.state.businessMetrics.filter((row) => !idSet.has(Number(row.urlId)));
   return before - store.state.urls.length;
+}
+
+function removeUrlData(store, urlIds, reason = 'manual_delete') {
+  const idSet = new Set(urlIds.map(Number));
+  const now = nowIso();
+  for (const url of store.state.urls.filter((row) => idSet.has(Number(row.id)))) {
+    store.upsert(
+      'deletedUrls',
+      (row) => row.normalizedUrl === url.normalizedUrl,
+      {
+        normalizedUrl: url.normalizedUrl,
+        originalUrl: url.url,
+        deletedAt: now,
+        reason,
+        createdAt: now,
+        updatedAt: now
+      },
+      {
+        originalUrl: url.url,
+        deletedAt: now,
+        reason,
+        updatedAt: now
+      }
+    );
+  }
+  return purgeUrlData(store, urlIds);
+}
+
+function cleanupOrphanUrls(store) {
+  const existingUrlIds = new Set(store.state.urls.map((url) => Number(url.id)));
+  const linkedUrlIds = new Set(store.state.urlSources
+    .filter((source) => existingUrlIds.has(Number(source.urlId)))
+    .map((source) => Number(source.urlId)));
+  const protectedUrlIds = new Set();
+  for (const key of ['inspectionResults', 'gscPerformanceMetrics', 'businessMetrics', 'technicalChecks']) {
+    for (const row of store.state[key] ?? []) protectedUrlIds.add(Number(row.urlId));
+  }
+  for (const alert of store.state.alerts ?? []) {
+    if (alert.status === 'active') protectedUrlIds.add(Number(alert.urlId));
+  }
+  const orphanIds = store.state.urls
+    .filter((url) => !linkedUrlIds.has(Number(url.id)) && !protectedUrlIds.has(Number(url.id)))
+    .map((url) => url.id);
+  return purgeUrlData(store, orphanIds);
 }
 
 function tableCounts(store) {
@@ -1564,6 +1690,9 @@ const server = http.createServer(async (request, response) => {
       const sitemapUrls = new Set(normalizeUrlList([body.sitemapUrls, body.sitemapUrl]));
       const beforeSitemaps = context.store.state.sitemaps.length;
       const beforeSources = context.store.state.urlSources.length;
+      const candidateUrlIds = new Set(context.store.state.urlSources
+        .filter((source) => sitemapUrls.has(source.sourceSitemapUrl) || sitemapUrls.has(source.sourceIdentifier))
+        .map((source) => Number(source.urlId)));
       const beforeExcluded = sources.excludedSitemapUrls?.length ?? 0;
 
       sources.excludedSitemapUrls = [
@@ -1575,6 +1704,10 @@ const server = http.createServer(async (request, response) => {
       context.store.state.urlSources = context.store.state.urlSources.filter((source) => (
         !sitemapUrls.has(source.sourceSitemapUrl) && !sitemapUrls.has(source.sourceIdentifier)
       ));
+      const remainingSourceUrlIds = new Set(context.store.state.urlSources.map((source) => Number(source.urlId)));
+      const orphanedFromDeletedSitemaps = [...candidateUrlIds].filter((id) => !remainingSourceUrlIds.has(id));
+      const deletedUrls = purgeUrlData(context.store, orphanedFromDeletedSitemaps);
+      const cleanedOrphanUrls = cleanupOrphanUrls(context.store);
 
       await writeJson('config/sources.json', sources);
       await reloadRuntimeConfig();
@@ -1584,6 +1717,8 @@ const server = http.createServer(async (request, response) => {
         sources,
         deletedSitemaps: beforeSitemaps - context.store.state.sitemaps.length,
         deletedUrlSources: beforeSources - context.store.state.urlSources.length,
+        deletedUrls,
+        cleanedOrphanUrls,
         excludedSitemapUrls: sources.excludedSitemapUrls.length - beforeExcluded
       });
       return;
@@ -1736,6 +1871,19 @@ const server = http.createServer(async (request, response) => {
       const result = compactState(context.store, body);
       await context.store.save();
       sendJson(response, 200, { ok: true, result });
+      return;
+    }
+
+    if (pathname === '/api/settings/maintenance/cleanup-orphans' && request.method === 'POST') {
+      const body = await readBody(request);
+      const removedOrphanUrls = cleanupOrphanUrls(context.store);
+      const result = compactState(context.store, {
+        prioritySnapshotsPerUrl: 0,
+        completedJobs: 500,
+        ...body
+      });
+      await context.store.save();
+      sendJson(response, 200, { ok: true, removedOrphanUrls, result });
       return;
     }
 

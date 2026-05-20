@@ -1068,7 +1068,7 @@ document.querySelector('#delete-selected-fetched-sitemaps').addEventListener('cl
     setStatus('Select at least one fetched sitemap to delete.');
     return;
   }
-  const ok = window.confirm(`Delete ${sitemapUrls.length} fetched sitemap(s) from the log and exclude them from future fetches? Imported page URLs stay in URL Explorer.`);
+  const ok = window.confirm(`Delete ${sitemapUrls.length} fetched sitemap(s), exclude them from future fetches, and remove page URLs that only came from those sitemap(s)?`);
   if (!ok) return;
   setStatus('Deleting fetched sitemaps...');
   const result = await api('/api/settings/sitemaps/delete', {
@@ -1076,7 +1076,7 @@ document.querySelector('#delete-selected-fetched-sitemaps').addEventListener('cl
     body: JSON.stringify({ sitemapUrls })
   });
   await refresh();
-  setStatus(`Deleted ${result.deletedSitemaps} fetched sitemap(s). Excluded ${result.excludedSitemapUrls} from future fetches.`);
+  setStatus(`Deleted ${result.deletedSitemaps} fetched sitemap(s), ${result.deletedUrls ?? 0} page URL(s), and cleaned ${result.cleanedOrphanUrls ?? 0} orphan URL(s).`);
 });
 
 document.querySelector('#fetch-sitemaps').addEventListener('click', async () => {
@@ -1231,6 +1231,35 @@ document.querySelector('#compact-state').addEventListener('click', async () => {
     setStatus(`Compaction failed: ${error.message}`);
   } finally {
     document.querySelector('#compact-state').disabled = false;
+  }
+});
+
+document.querySelector('#cleanup-orphans').addEventListener('click', async () => {
+  const ok = window.confirm('Remove URL records that no longer belong to any sitemap/manual source and clear priority snapshot history?');
+  if (!ok) return;
+  setStatus('Cleaning orphan URLs...');
+  document.querySelector('#cleanup-orphans').disabled = true;
+  try {
+    const response = await api('/api/settings/maintenance/cleanup-orphans', {
+      method: 'POST',
+      body: JSON.stringify({ clearPrioritySnapshots: true })
+    });
+    const result = response.result;
+    const removed = result.removed ?? {};
+    const removedTotal = Object.values(removed).reduce((sum, value) => sum + Number(value || 0), 0);
+    document.querySelector('#maintenance-result').innerHTML = `
+      <strong>Cleaned.</strong> Removed ${response.removedOrphanUrls ?? result.deletedOrphanUrls ?? 0} orphan URL(s) and ${removedTotal} related/history record(s).<br>
+      ${Object.entries(removed)
+        .filter(([, value]) => Number(value) > 0)
+        .map(([key, value]) => `${esc(key)}: ${value}`)
+        .join(' · ') || 'Nothing needed cleaning.'}
+    `;
+    await refresh();
+    setStatus('Orphan cleanup completed.');
+  } catch (error) {
+    setStatus(`Cleanup failed: ${error.message}`);
+  } finally {
+    document.querySelector('#cleanup-orphans').disabled = false;
   }
 });
 
