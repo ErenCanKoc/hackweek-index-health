@@ -27,6 +27,44 @@ function appStateKey() {
   return process.env.APP_STATE_KEY || 'default';
 }
 
+function minutesEnv(name, fallback) {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function jobTimestamp(job) {
+  return job?.updatedAt ?? job?.startedAt ?? job?.createdAt ?? null;
+}
+
+function isEmptyRunningJob(job) {
+  const progress = job?.progress ?? {};
+  return job?.status === 'running'
+    && Number(progress.total ?? 0) === 0
+    && Number(progress.completed ?? 0) === 0
+    && !job?.result;
+}
+
+function staleReason(job, now = Date.now()) {
+  if (!['queued', 'running'].includes(job?.status)) return null;
+  const timestamp = Date.parse(jobTimestamp(job));
+  if (!Number.isFinite(timestamp)) return null;
+  const ageMinutes = (now - timestamp) / 60000;
+  const queuedTimeout = minutesEnv('SITEMAP_FETCH_QUEUED_TIMEOUT_MINUTES', 30);
+  const runningTimeout = minutesEnv('SITEMAP_FETCH_RUNNING_TIMEOUT_MINUTES', 120);
+  const emptyRunningTimeout = minutesEnv('SITEMAP_FETCH_EMPTY_RUNNING_TIMEOUT_MINUTES', 10);
+
+  if (job.status === 'queued' && ageMinutes > queuedTimeout) {
+    return `Queued sitemap fetch job exceeded ${queuedTimeout} minutes.`;
+  }
+  if (isEmptyRunningJob(job) && ageMinutes > emptyRunningTimeout) {
+    return `Empty sitemap fetch job had no source progress for ${emptyRunningTimeout} minutes.`;
+  }
+  if (job.status === 'running' && ageMinutes > runningTimeout) {
+    return `Running sitemap fetch job exceeded ${runningTimeout} minutes.`;
+  }
+  return null;
+}
+
 export function defaultSitemapFetchProgress() {
   return {
     phase: 'queued',
@@ -234,12 +272,38 @@ export async function listSitemapFetchJobs(limit = 10) {
 }
 
 export async function latestSitemapFetchJob() {
+  await recoverStaleSitemapFetchJobs().catch((error) => {
+    console.error('Failed to recover stale sitemap fetch jobs:', error.message);
+  });
   return (await listSitemapFetchJobs(1))[0] ?? null;
 }
 
 export async function hasActiveSitemapFetchJob() {
+  await recoverStaleSitemapFetchJobs().catch((error) => {
+    console.error('Failed to recover stale sitemap fetch jobs:', error.message);
+  });
   const jobs = await listSitemapFetchJobs(5);
   return jobs.find((job) => ['queued', 'running'].includes(job.status)) ?? null;
+}
+
+export async function recoverStaleSitemapFetchJobs(limit = 10) {
+  const jobs = await listSitemapFetchJobs(limit);
+  const staleJobs = jobs
+    .map((job) => ({ job, reason: staleReason(job) }))
+    .filter((item) => item.reason);
+  for (const { job, reason } of staleJobs) {
+    await updateSitemapFetchJob(job.id, {
+      status: 'failed',
+      finishedAt: nowIso(),
+      error: reason,
+      progress: {
+        ...(job.progress ?? defaultSitemapFetchProgress()),
+        phase: 'failed',
+        updatedAt: nowIso()
+      }
+    });
+  }
+  return staleJobs.map(({ job, reason }) => ({ id: job.id, reason }));
 }
 
 function removeUrlData(store, urlIds) {
@@ -317,12 +381,13 @@ export async function executeSitemapFetchJob(jobId, options = {}) {
       }
     });
     const cleanedAfter = removeSitemapUrlRecords(store);
-    const shouldRecalculatePriorities = fetchOptions.recalculatePriorities === true;
+    const hasSitemapSources = Number(counts.sourceSitemapCount ?? counts.sitemapCount ?? 0) > 0;
+    const shouldRecalculatePriorities = hasSitemapSources && fetchOptions.recalculatePriorities === true;
     const thresholds = shouldRecalculatePriorities ? recalculatePriorities(store) : null;
     await store.save();
 
     let schedulerSummary = null;
-    if (fetchOptions.runSchedulerAfterFetch === true) {
+    if (hasSitemapSources && fetchOptions.runSchedulerAfterFetch === true) {
       schedulerSummary = await runScheduler(store, config, {
         limit: Number(fetchOptions.schedulerLimit ?? process.env.DAILY_CRON_SCHEDULER_LIMIT ?? 500),
         force: Boolean(fetchOptions.schedulerForce)
@@ -341,6 +406,7 @@ export async function executeSitemapFetchJob(jobId, options = {}) {
       urlsAfter: store.state.urls.length,
       urlsAddedOrUpdated: counts.urlCount,
       priorityRecalculated: shouldRecalculatePriorities,
+      skippedPostFetchWork: !hasSitemapSources,
       schedulerSummary,
       thresholds
     };
