@@ -2203,9 +2203,15 @@ async function runSitemapFetchAction(body = {}, parsed = null) {
   const cleanedBefore = removeSitemapUrlRecords(context.store);
   const counts = await ingestConfiguredSitemaps(context.store, context.config, context.resolvePath, {
     includeLocal: false,
-    fetchChildSitemaps: true,
-    useDemoUrlsWhenChildFetchIsOff: false,
-    useDemoUrlsWhenChildFetchFails: false,
+    fetchChildSitemaps: typeof body.fetchChildSitemaps === 'boolean'
+      ? body.fetchChildSitemaps
+      : context.config.sources.fetchChildSitemaps,
+    useDemoUrlsWhenChildFetchIsOff: typeof body.useDemoUrlsWhenChildFetchIsOff === 'boolean'
+      ? body.useDemoUrlsWhenChildFetchIsOff
+      : context.config.sources.useDemoUrlsWhenChildFetchIsOff,
+    useDemoUrlsWhenChildFetchFails: typeof body.useDemoUrlsWhenChildFetchFails === 'boolean'
+      ? body.useDemoUrlsWhenChildFetchFails
+      : context.config.sources.useDemoUrlsWhenChildFetchFails,
     onProgress: (progress) => {
       sitemapFetchState.progress = {
         ...sitemapFetchState.progress,
@@ -2217,17 +2223,11 @@ async function runSitemapFetchAction(body = {}, parsed = null) {
   const shouldRecalculatePriorities = body.recalculatePriorities === true
     || parsed?.searchParams?.get('recalculatePriorities') === 'true';
   const thresholds = shouldRecalculatePriorities ? recalculatePriorities(context.store) : null;
-  const fetchLog = sitemapFetchLog(context.store);
   await context.store.save();
   return {
     ok: true,
     counts,
-    fetchSummary: {
-      success: fetchLog.filter((row) => row.health === 'success').length,
-      failed: fetchLog.filter((row) => row.health === 'failed').length,
-      pending: fetchLog.filter((row) => row.health === 'pending').length,
-      total: fetchLog.length
-    },
+    fetchSummary: counts.fetchSummary,
     cleanedSitemapUrlRecords: cleanedBefore + cleanedAfter,
     urlsBefore: beforeUrls,
     urlsAfter: context.store.state.urls.length,

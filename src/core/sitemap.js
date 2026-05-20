@@ -105,7 +105,10 @@ export async function fetchText(source, timeoutMs = 15000) {
     try {
       const response = await fetch(source, {
         signal: controller.signal,
-        headers: { 'user-agent': 'IndexHealthMonitoringEngine/0.1' }
+        headers: {
+          accept: 'application/xml,text/xml,text/plain,*/*',
+          'user-agent': 'Mozilla/5.0 (compatible; IndexHealthMonitoringEngine/0.1; +https://www.jotform.com/)'
+        }
       });
       if (!response.ok) throw new Error(`Fetch failed ${response.status} for ${source}`);
       const buffer = Buffer.from(await response.arrayBuffer());
@@ -122,10 +125,15 @@ export async function expandSitemapSources(sources, resolvePath, options = {}) {
   const sitemapUrls = [];
 
   async function expandSource(source) {
-    const text = await fetchText(source);
-    const childEntries = extractSitemapIndexEntries(text);
-    if (!childEntries.length) return [source];
-    return childEntries.map((entry) => entry.loc);
+    try {
+      const text = await fetchText(source);
+      const childEntries = extractSitemapIndexEntries(text);
+      if (!childEntries.length) return [source];
+      return childEntries.map((entry) => entry.loc);
+    } catch (error) {
+      if (source.startsWith('http://') || source.startsWith('https://')) return [source];
+      throw error;
+    }
   }
 
   if (includeLocal) {

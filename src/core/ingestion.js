@@ -191,7 +191,10 @@ export async function ingestConfiguredSitemaps(store, config, resolvePath, optio
   let fetchCompleted = 0;
   let fetchSuccess = 0;
   let fetchFailed = 0;
-  const fetchedSitemaps = await mapWithConcurrency(sitemapUrls, fetchConcurrency, async (sitemapUrl) => {
+  let fetchPending = 0;
+  let importCompleted = 0;
+
+  const fetchResults = await mapWithConcurrency(sitemapUrls, fetchConcurrency, async (sitemapUrl) => {
     const sitemapInfo = classifySitemap(sitemapUrl, config.policy);
     let urlEntries = [];
     let lastFetchStatus = 'child_fetch_off';
@@ -214,8 +217,12 @@ export async function ingestConfiguredSitemaps(store, config, resolvePath, optio
     }
 
     fetchCompleted += 1;
-    if (lastFetchStatus.startsWith('success')) fetchSuccess += 1;
-    if (lastFetchStatus.startsWith('fetch_failed')) fetchFailed += 1;
+    const fetchOk = lastFetchStatus.startsWith('success') || urlEntries.length > 0;
+    const fetchFailedWithoutFallback = lastFetchStatus.startsWith('fetch_failed') && urlEntries.length === 0;
+    const fetchPendingWithoutFallback = lastFetchStatus === 'child_fetch_off' && urlEntries.length === 0;
+    if (fetchOk) fetchSuccess += 1;
+    if (fetchFailedWithoutFallback) fetchFailed += 1;
+    if (fetchPendingWithoutFallback) fetchPending += 1;
     reportProgress({
       phase: 'fetching_sitemaps',
       currentSitemapUrl: sitemapUrl,
@@ -225,26 +232,6 @@ export async function ingestConfiguredSitemaps(store, config, resolvePath, optio
       percent: totalSitemaps ? Math.round((fetchCompleted / totalSitemaps) * 80) : 100
     });
 
-    return { sitemapUrl, sitemapInfo, urlEntries, lastFetchStatus, lastSuccessfulFetchAt };
-  });
-
-  const fetchFailures = fetchedSitemaps.filter((item) => item.lastFetchStatus.startsWith('fetch_failed'));
-  if (fetchFailures.length && !sources.useDemoUrlsWhenChildFetchFails) {
-    throw new Error(fetchFailures.map((item) => `${item.sitemapUrl}: ${item.lastFetchStatus}`).join(' | '));
-  }
-
-  let importCompleted = 0;
-  reportProgress({
-    phase: 'importing_urls',
-    completed: 0,
-    success: fetchSuccess,
-    failed: fetchFailed,
-    importedUrls: 0,
-    percent: totalSitemaps ? 80 : 100
-  });
-
-  for (const fetched of fetchedSitemaps) {
-    const { sitemapUrl, sitemapInfo } = fetched;
     const sitemap = store.upsert(
       'sitemaps',
       (row) => row.sitemapUrl === sitemapUrl,
@@ -266,10 +253,9 @@ export async function ingestConfiguredSitemaps(store, config, resolvePath, optio
       }
     );
 
-    sitemap.lastFetchStatus = fetched.lastFetchStatus;
-    if (fetched.lastSuccessfulFetchAt) sitemap.lastSuccessfulFetchAt = fetched.lastSuccessfulFetchAt;
+    sitemap.lastFetchStatus = lastFetchStatus;
+    if (lastSuccessfulFetchAt) sitemap.lastSuccessfulFetchAt = lastSuccessfulFetchAt;
 
-    let urlEntries = fetched.urlEntries;
     const skippedSitemapLocs = urlEntries.filter((entry) => isSitemapLikeUrl(entry.loc)).length;
     urlEntries = urlEntries.filter((entry) => !isSitemapLikeUrl(entry.loc));
     sitemap.urlCount = urlEntries.length;
@@ -320,7 +306,16 @@ export async function ingestConfiguredSitemaps(store, config, resolvePath, optio
       importedUrls: urlCount,
       percent: totalSitemaps ? 80 + Math.round((importCompleted / totalSitemaps) * 20) : 100
     });
-  }
+
+    return {
+      sitemapUrl,
+      status: lastFetchStatus,
+      ok: fetchOk,
+      failed: fetchFailedWithoutFallback,
+      pending: fetchPendingWithoutFallback,
+      urlCount: urlEntries.length
+    };
+  });
 
   reportProgress({
     phase: 'complete',
@@ -331,7 +326,16 @@ export async function ingestConfiguredSitemaps(store, config, resolvePath, optio
     percent: 100
   });
 
-  return { sitemapCount: sitemapUrls.length, urlCount };
+  return {
+    sitemapCount: sitemapUrls.length,
+    urlCount,
+    fetchSummary: {
+      success: fetchResults.filter((item) => item.ok).length,
+      failed: fetchResults.filter((item) => item.failed).length,
+      pending: fetchResults.filter((item) => item.pending).length,
+      total: fetchResults.length
+    }
+  };
 }
 
 export async function ingestManualUrlCsv(store, filePath) {

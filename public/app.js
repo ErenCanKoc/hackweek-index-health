@@ -54,9 +54,24 @@ async function api(path, options = {}) {
       const json = JSON.parse(text);
       message = json.error ?? text;
     } catch {
-      message = text;
+      const titleMatch = text.match(/<title[^>]*>(.*?)<\/title>/is);
+      const headingMatch = text.match(/<h1[^>]*>(.*?)<\/h1>/is);
+      const title = titleMatch?.[1]?.replace(/\s+/g, ' ').trim();
+      const heading = headingMatch?.[1]?.replace(/\s+/g, ' ').trim();
+      if (/^\s*<!doctype html|^\s*<html/i.test(text)) {
+        message = [title, heading].filter(Boolean).join(' - ') || 'HTML error page returned';
+      } else {
+        message = text.length > 500 ? `${text.slice(0, 500)}...` : text;
+      }
     }
     throw new Error(`${path}: ${message}`);
+  }
+  const contentType = response.headers.get('content-type') ?? '';
+  if (!contentType.includes('application/json')) {
+    const text = await response.text();
+    const titleMatch = text.match(/<title[^>]*>(.*?)<\/title>/is);
+    const title = titleMatch?.[1]?.replace(/\s+/g, ' ').trim();
+    throw new Error(`${path}: expected JSON, got ${title || contentType || 'non-JSON response'}`);
   }
   return response.json();
 }
@@ -1177,7 +1192,13 @@ document.querySelector('#fetch-sitemaps').addEventListener('click', async () => 
       setStatus(`${result.message ?? 'Sitemap fetch started.'} ${sitemapProgressText(result.sitemapFetch.progress)}`);
       for (let attempt = 0; attempt < 120; attempt += 1) {
         await new Promise((resolve) => setTimeout(resolve, 5000));
-        const status = await api('/api/actions/fetch-sitemaps/status', { timeoutMs: 10000 });
+        let status;
+        try {
+          status = await api('/api/actions/fetch-sitemaps/status', { timeoutMs: 10000 });
+        } catch (error) {
+          setStatus(`Sitemap fetch started, but status check failed: ${error.message}. The backend may be restarting; refresh in a minute.`);
+          return;
+        }
         if (status.sitemapFetch?.running) {
           updateSitemapProgressUi(status.sitemapFetch.progress);
           setStatus(`Sitemap fetch ${sitemapProgressText(status.sitemapFetch.progress)}.`);
