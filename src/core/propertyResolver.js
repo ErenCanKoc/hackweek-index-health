@@ -109,6 +109,55 @@ export function resolveEligibleProperties(store, urlRecord) {
   return unique(candidates.map((property) => property?.id)).map((id) => store.findById('properties', id));
 }
 
+export function explainPropertyResolution(store, urlRecord, policy) {
+  const rawCandidates = [];
+  const category = urlRecord.category;
+  const locale = urlRecord.locale;
+
+  function add(property, reason) {
+    if (!property) return;
+    rawCandidates.push({ property, reason });
+  }
+
+  if (urlRecord.isScaledContent && CATEGORY_PRIORITY_PROPERTIES.has(category)) {
+    add(propertyForCategory(store, category), 'scaled content category property');
+  }
+
+  if (CATEGORY_PRIORITY_PROPERTIES.has(category)) {
+    add(propertyForCategory(store, category), 'category priority property');
+  }
+
+  if (locale && locale !== 'en') {
+    add(propertyForLocale(store, locale), 'non-English locale property');
+  }
+
+  add(byPropertyUrl(store, 'https://www.jotform.com/'), 'default www fallback');
+  add(byPropertyUrl(store, 'sc-domain:jotform.com'), 'sc-domain fallback');
+
+  const seen = new Set();
+  const candidates = rawCandidates
+    .filter(({ property }) => {
+      if (seen.has(property.id)) return false;
+      seen.add(property.id);
+      return true;
+    })
+    .map(({ property, reason }) => {
+      const quotaRemaining = property.dailyQuotaLimit - property.dailyQuotaUsed;
+      return {
+        property,
+        reason,
+        quotaRemaining,
+        eligible: property.isActive && property.authStatus === 'ok' && property.dailyQuotaUsed < policy.quota.stopAtPerProperty
+      };
+    });
+  const selected = chooseBestProperty(store, candidates.map((candidate) => candidate.property), policy);
+  return {
+    selectedPropertyId: selected?.id ?? null,
+    selectedPropertyUrl: selected?.propertyUrl ?? null,
+    candidates
+  };
+}
+
 export function chooseBestProperty(store, eligibleProperties, policy) {
   const stopAt = policy.quota.stopAtPerProperty;
   return eligibleProperties

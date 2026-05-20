@@ -407,6 +407,7 @@ function detailRow(detail) {
                 ['Index State', detail.url.currentIndexState],
                 ['Health Status', detail.health?.currentHealthStatus ?? detail.url.currentHealthState ?? '-'],
                 ['Severity', detail.health?.currentSeverity ?? '-'],
+                ['Selected Property', detail.propertyResolution?.selectedPropertyUrl ?? '-'],
                 ['Google Canonical', latest?.googleCanonical ?? '-'],
                 ['User Canonical', latest?.userCanonical ?? '-'],
                 ['Page Fetch', latest?.pageFetchState ?? '-'],
@@ -416,6 +417,15 @@ function detailRow(detail) {
                 <tr>
                   <td>${esc(label)}</td>
                   <td><code>${esc(value)}</code></td>
+                </tr>
+              `))}
+              <h2>Property Resolver</h2>
+              ${table(['Property', 'Reason', 'Quota Left', 'Eligible'], (detail.propertyResolution?.candidates ?? []).map((candidate) => `
+                <tr>
+                  <td><code>${esc(candidate.property?.propertyUrl ?? '-')}</code></td>
+                  <td>${esc(candidate.reason)}</td>
+                  <td>${candidate.quotaRemaining}</td>
+                  <td>${candidate.eligible ? 'yes' : 'no'}</td>
                 </tr>
               `))}
               ${table(['Type', 'Severity', 'Status', 'Action'], detail.alerts.map((alert) => `

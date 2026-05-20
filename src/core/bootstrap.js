@@ -7,6 +7,7 @@ import { loadStore } from './store.js';
 export async function createContext(options = {}) {
   const config = await loadConfig();
   const store = await loadStore(options.storePath);
+  store.config = config;
   ensureProperties(store, config.propertyMappings, config.policy);
   return { config, store, resolvePath };
 }

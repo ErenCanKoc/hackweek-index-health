@@ -1,5 +1,7 @@
 import { dateKey, daysBetween } from './utils.js';
 
+import { explainPropertyResolution } from './propertyResolver.js';
+
 export function overview(store) {
   const today = dateKey();
   const urls = store.state.urls.filter((url) => url.isActive && !url.isManuallyExcluded);
@@ -114,7 +116,8 @@ export function urlDetail(store, id) {
     transitions: store.state.stateTransitions.filter((transition) => transition.urlId === url.id).slice(-20).reverse(),
     technicalChecks: store.state.technicalChecks.filter((check) => check.urlId === url.id).slice(-10).reverse(),
     alerts: store.state.alerts.filter((alert) => alert.urlId === url.id).slice(-20).reverse(),
-    health: store.state.healthStatuses.find((status) => status.urlId === url.id) ?? null
+    health: store.state.healthStatuses.find((status) => status.urlId === url.id) ?? null,
+    propertyResolution: explainPropertyResolution(store, url, store.config?.policy ?? { quota: { stopAtPerProperty: 1999 } })
   };
 }
 
