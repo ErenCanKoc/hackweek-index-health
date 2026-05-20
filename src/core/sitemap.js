@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import { gunzipSync } from 'node:zlib';
 import { normalizeUrl } from './utils.js';
 
 const CATEGORY_DICTIONARY = [
@@ -85,6 +86,18 @@ export function classifySitemap(sitemapUrl, policy) {
   };
 }
 
+function decodeSitemapBuffer(buffer, source) {
+  const isGzip = buffer[0] === 0x1f && buffer[1] === 0x8b;
+  if (isGzip || source.toLowerCase().endsWith('.gz')) {
+    try {
+      return gunzipSync(buffer).toString('utf8');
+    } catch (error) {
+      if (isGzip) throw error;
+    }
+  }
+  return buffer.toString('utf8');
+}
+
 export async function fetchText(source, timeoutMs = 15000) {
   if (source.startsWith('http://') || source.startsWith('https://')) {
     const controller = new AbortController();
@@ -95,12 +108,13 @@ export async function fetchText(source, timeoutMs = 15000) {
         headers: { 'user-agent': 'IndexHealthMonitoringEngine/0.1' }
       });
       if (!response.ok) throw new Error(`Fetch failed ${response.status} for ${source}`);
-      return response.text();
+      const buffer = Buffer.from(await response.arrayBuffer());
+      return decodeSitemapBuffer(buffer, source);
     } finally {
       clearTimeout(timeout);
     }
   }
-  return fs.readFile(source, 'utf8');
+  return decodeSitemapBuffer(await fs.readFile(source), source);
 }
 
 export async function expandSitemapSources(sources, resolvePath, options = {}) {
