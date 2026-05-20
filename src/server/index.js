@@ -392,6 +392,118 @@ function cleanupStateObject(state, options = {}) {
   };
 }
 
+async function readLiteUrlPage(filters) {
+  const pool = getLitePool();
+  if (!pool) return null;
+  const appStateKey = process.env.APP_STATE_KEY || 'default';
+  const limit = Math.max(1, Math.min(Number(filters.limit || 150), 500));
+  const offset = Math.max(0, Number(filters.offset || 0) || 0);
+  const params = [appStateKey];
+  const where = [];
+
+  const addParam = (value) => {
+    params.push(value);
+    return `$${params.length}`;
+  };
+
+  if (filters.priorityTier) where.push(`elem ->> 'currentPriorityTier' = ${addParam(filters.priorityTier)}`);
+  if (filters.indexState) where.push(`elem ->> 'currentIndexState' = ${addParam(filters.indexState)}`);
+  if (filters.category) where.push(`elem ->> 'category' = ${addParam(filters.category)}`);
+  if (filters.locale) where.push(`elem ->> 'locale' = ${addParam(filters.locale)}`);
+  if (filters.scaled === 'true') where.push("COALESCE((elem ->> 'isScaledContent')::boolean, false) = true");
+  if (filters.scaled === 'false') where.push("COALESCE((elem ->> 'isScaledContent')::boolean, false) = false");
+  if (filters.q) where.push(`LOWER(COALESCE(elem ->> 'normalizedUrl', elem ->> 'url', '')) LIKE ${addParam(`%${String(filters.q).toLowerCase()}%`)}`);
+
+  const offsetParam = addParam(offset);
+  const limitParam = addParam(limit);
+  const result = await pool.query(
+    `
+      WITH urls AS (
+        SELECT elem, ord
+        FROM app_state,
+          jsonb_array_elements(COALESCE(state -> 'urls', '[]'::jsonb)) WITH ORDINALITY AS rows(elem, ord)
+        WHERE id = $1
+      ),
+      filtered AS (
+        SELECT elem, ord
+        FROM urls
+        ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+      ),
+      page AS (
+        SELECT elem, ord
+        FROM filtered
+        ORDER BY ord ASC
+        OFFSET ${offsetParam}
+        LIMIT ${limitParam}
+      )
+      SELECT
+        (SELECT COUNT(*)::int FROM filtered) AS total,
+        COALESCE((SELECT jsonb_agg(elem ORDER BY ord) FROM page), '[]'::jsonb) AS rows
+    `,
+    params
+  );
+  const row = result.rows[0] ?? { total: 0, rows: [] };
+  return {
+    rows: row.rows ?? [],
+    total: Number(row.total ?? 0),
+    limit,
+    offset,
+    hasMore: offset + limit < Number(row.total ?? 0),
+    lite: true
+  };
+}
+
+function nextDueForLitePriority(priorityTier) {
+  if (priorityTier === 'Excluded') return null;
+  const days = { P0: 1, P1: 7, P2: 15, P3: 30 }[priorityTier] ?? 30;
+  const date = new Date();
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString();
+}
+
+async function updateUrlInPostgresState(id, patch) {
+  const state = await readAppStateObject();
+  if (!state) throw new Error('app_state row not found.');
+  const url = (state.urls ?? []).find((row) => Number(row.id) === Number(id));
+  if (!url) return null;
+  if (patch.category !== undefined) url.category = String(patch.category || 'pages');
+  if (patch.locale !== undefined) url.locale = patch.locale ? String(patch.locale).toLowerCase() : null;
+  if (patch.priorityTier !== undefined) {
+    url.currentPriorityTier = patch.priorityTier;
+    url.manualPriorityTier = patch.priorityTier === 'Excluded' ? 'Excluded' : patch.priorityTier;
+    url.isManuallyExcluded = patch.priorityTier === 'Excluded';
+    url.isActive = patch.priorityTier !== 'Excluded';
+    url.nextInspectionDueAt = nextDueForLitePriority(patch.priorityTier);
+  }
+  if (patch.isScaledContent !== undefined) url.isScaledContent = Boolean(patch.isScaledContent);
+  if (patch.scaledContentType !== undefined) url.scaledContentType = patch.scaledContentType ? String(patch.scaledContentType) : null;
+  url.updatedAt = nowIso();
+  await writeAppStateObject(state);
+  return url;
+}
+
+async function setUrlExcludedInPostgresState(id, excluded) {
+  const state = await readAppStateObject();
+  if (!state) throw new Error('app_state row not found.');
+  const url = (state.urls ?? []).find((row) => Number(row.id) === Number(id));
+  if (!url) return null;
+  url.isManuallyExcluded = excluded;
+  url.isActive = !excluded;
+  if (excluded) {
+    url.currentPriorityTier = 'Excluded';
+    url.manualPriorityTier = 'Excluded';
+    url.currentIndexState = 'manually_excluded';
+    url.nextInspectionDueAt = null;
+  } else {
+    if (url.manualPriorityTier === 'Excluded') delete url.manualPriorityTier;
+    url.currentPriorityTier = url.currentPriorityTier === 'Excluded' ? 'P3' : url.currentPriorityTier;
+    url.nextInspectionDueAt = nowIso();
+  }
+  url.updatedAt = nowIso();
+  await writeAppStateObject(state);
+  return url;
+}
+
 async function cleanupPostgresState(options = {}) {
   const state = await readAppStateObject();
   if (!state) throw new Error('app_state row not found.');
@@ -493,32 +605,25 @@ async function handleLiteApi(pathname, parsed, request, response) {
 
   if (pathname === '/api/urls') {
     const filters = Object.fromEntries(parsed.searchParams.entries());
-    const limit = Math.max(1, Math.min(Number(filters.limit || 150), 500));
-    const offset = Math.max(0, Number(filters.offset || 0) || 0);
-    const query = String(filters.q ?? '').toLowerCase();
-    const urls = await readAppStateArray('urls');
-    const filtered = urls.filter((url) => {
-      if (filters.priorityTier && url.currentPriorityTier !== filters.priorityTier) return false;
-      if (filters.indexState && url.currentIndexState !== filters.indexState) return false;
-      if (filters.category && url.category !== filters.category) return false;
-      if (filters.locale && url.locale !== filters.locale) return false;
-      if (filters.scaled === 'true' && !url.isScaledContent) return false;
-      if (filters.scaled === 'false' && url.isScaledContent) return false;
-      if (query && !String(url.normalizedUrl ?? '').toLowerCase().includes(query)) return false;
-      return true;
-    });
-    sendJson(response, 200, {
-      rows: filtered.slice(offset, offset + limit).map((url) => ({ ...url, health: null, sources: [], activeAlerts: [] })),
-      total: filtered.length,
-      limit,
-      offset,
-      hasMore: offset + limit < filtered.length,
-      lite: true
-    });
+    const result = await readLiteUrlPage(filters);
+    result.rows = result.rows.map((url) => ({ ...url, health: null, sources: [], activeAlerts: [] }));
+    sendJson(response, 200, result);
     return true;
   }
 
   const detailMatch = pathname.match(/^\/api\/urls\/(\d+)$/);
+  if (detailMatch && request.method === 'PATCH') {
+    const body = await readBody(request);
+    const allowedTiers = new Set(['P0', 'P1', 'P2', 'P3', 'Excluded']);
+    if (body.priorityTier && !allowedTiers.has(body.priorityTier)) {
+      sendJson(response, 400, { error: 'Invalid priority tier' });
+      return true;
+    }
+    const url = await updateUrlInPostgresState(Number(detailMatch[1]), body);
+    sendJson(response, url ? 200 : 404, url ? { ok: true, url, lite: true } : { error: 'URL not found' });
+    return true;
+  }
+
   if (detailMatch && request.method === 'GET') {
     const id = Number(detailMatch[1]);
     const [urls, sources, inspections, jobs, technicalChecks, alerts, healthStatuses, properties] = await Promise.all([
@@ -550,6 +655,20 @@ async function handleLiteApi(pathname, parsed, request, response) {
       propertyResolution: { selectedPropertyUrl: 'lite mode', candidates: [] },
       lite: true
     });
+    return true;
+  }
+
+  const excludeMatch = pathname.match(/^\/api\/urls\/(\d+)\/exclude$/);
+  if (excludeMatch && request.method === 'POST') {
+    const url = await setUrlExcludedInPostgresState(Number(excludeMatch[1]), true);
+    sendJson(response, url ? 200 : 404, url ? { ok: true, url, lite: true } : { error: 'URL not found' });
+    return true;
+  }
+
+  const includeMatch = pathname.match(/^\/api\/urls\/(\d+)\/include$/);
+  if (includeMatch && request.method === 'POST') {
+    const url = await setUrlExcludedInPostgresState(Number(includeMatch[1]), false);
+    sendJson(response, url ? 200 : 404, url ? { ok: true, url, lite: true } : { error: 'URL not found' });
     return true;
   }
 

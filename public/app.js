@@ -531,8 +531,8 @@ async function loadScaled() {
   );
 }
 
-async function loadQuota() {
-  const properties = await api('/api/properties');
+async function loadQuota(options = {}) {
+  const properties = await api('/api/properties', { timeoutMs: options.target === 'settings' ? 6000 : 20000 });
   const markup = table(
     ['Property', 'Active', 'Type', 'Source', 'Daily Used', 'Daily Remaining', 'Monthly Used', 'Fallback', 'Auth', 'Last Success'],
     properties.map((property) => `
@@ -566,8 +566,10 @@ async function loadQuota() {
       </tr>
     `)
   );
-  document.querySelector('#property-table').innerHTML = markup;
-  document.querySelector('#property-management').innerHTML = markup;
+  const quotaTable = document.querySelector('#property-table');
+  const managementTable = document.querySelector('#property-management');
+  if (quotaTable && options.target !== 'settings') quotaTable.innerHTML = markup;
+  if (managementTable) managementTable.innerHTML = markup;
 }
 
 async function loadAlerts() {
@@ -769,19 +771,26 @@ async function loadSettings() {
       </tr>
     `)
   );
-  await loadQuota();
+  document.querySelector('#property-management').innerHTML = '<div class="empty-state">Property data loads separately.</div>';
+  loadQuota({ target: 'settings' }).catch((error) => {
+    document.querySelector('#property-management').innerHTML = `<div class="empty-state">Property data skipped: ${esc(error.message)}</div>`;
+  });
 }
 
 async function refresh() {
   setStatus('Refreshing...');
-  if (state.view === 'overview') await loadOverview();
-  if (state.view === 'urls') await loadUrls();
-  if (state.view === 'scaled') await loadScaled();
-  if (state.view === 'quota') await loadQuota();
-  if (state.view === 'alerts') await loadAlerts();
-  if (state.view === 'roadmap') await loadRoadmap();
-  if (state.view === 'settings') await loadSettings();
-  setStatus(`Updated ${new Date().toLocaleTimeString()}`);
+  try {
+    if (state.view === 'overview') await loadOverview();
+    if (state.view === 'urls') await loadUrls();
+    if (state.view === 'scaled') await loadScaled();
+    if (state.view === 'quota') await loadQuota();
+    if (state.view === 'alerts') await loadAlerts();
+    if (state.view === 'roadmap') await loadRoadmap();
+    if (state.view === 'settings') await loadSettings();
+    setStatus(`Updated ${new Date().toLocaleTimeString()}`);
+  } catch (error) {
+    setStatus(`Refresh failed: ${error.message}`);
+  }
 }
 
 function setView(view) {
@@ -795,34 +804,55 @@ function setView(view) {
 
 document.addEventListener('click', async (event) => {
   const nav = event.target.closest('[data-view]');
-  if (nav) setView(nav.dataset.view);
+  if (nav) {
+    event.preventDefault();
+    setView(nav.dataset.view);
+    return;
+  }
 
   const tab = event.target.closest('[data-scaled-tab]');
   if (tab) {
+    event.preventDefault();
     state.scaledTab = tab.dataset.scaledTab;
     document.querySelectorAll('.tab').forEach((item) => item.classList.toggle('active', item === tab));
     await loadScaled();
+    return;
   }
 
   const detail = event.target.closest('[data-detail]');
-  if (detail) await openDetail(detail.dataset.detail);
+  if (detail) {
+    event.preventDefault();
+    await openDetail(detail.dataset.detail);
+    return;
+  }
 
   if (event.target.closest('#prev-url-page')) {
+    event.preventDefault();
+    if (event.target.closest('#prev-url-page').disabled) return;
+    setStatus('Loading previous page...');
     state.urlPage = Math.max(1, state.urlPage - 1);
     state.openUrlId = null;
     state.openUrlDetail = null;
     await loadUrls();
+    setStatus(`Updated ${new Date().toLocaleTimeString()}`);
+    return;
   }
 
   if (event.target.closest('#next-url-page')) {
+    event.preventDefault();
+    if (event.target.closest('#next-url-page').disabled) return;
+    setStatus('Loading next page...');
     state.urlPage += 1;
     state.openUrlId = null;
     state.openUrlDetail = null;
     await loadUrls();
+    setStatus(`Updated ${new Date().toLocaleTimeString()}`);
+    return;
   }
 
   const inspectNow = event.target.closest('[data-inspect-now]');
   if (inspectNow) {
+    event.preventDefault();
     const id = Number(inspectNow.dataset.inspectNow);
     setStatus('Inspecting selected URL...');
     const result = await api('/api/actions/run-scheduler', {
@@ -833,18 +863,22 @@ document.addEventListener('click', async (event) => {
     state.openUrlDetail = await api(`/api/urls/${id}`);
     await refresh();
     setStatus(schedulerStatus(result.summary));
+    return;
   }
 
   const exclude = event.target.closest('[data-exclude]');
   if (exclude) {
+    event.preventDefault();
     const row = await api(`/api/urls/${exclude.dataset.exclude}`);
     const action = row.url.isManuallyExcluded ? 'include' : 'exclude';
     await api(`/api/urls/${exclude.dataset.exclude}/${action}`, { method: 'POST', body: '{}' });
     await refresh();
+    return;
   }
 
   const rollbackImport = event.target.closest('[data-rollback-import]');
   if (rollbackImport) {
+    event.preventDefault();
     const ok = window.confirm(`Rollback import #${rollbackImport.dataset.rollbackImport}? URLs created only by this import will be deleted and previous metric values will be restored when available.`);
     if (!ok) return;
     setStatus('Rolling back import...');
@@ -854,10 +888,12 @@ document.addEventListener('click', async (event) => {
     });
     await refresh();
     setStatus(`Rolled back import #${result.batch.id}. Deleted ${result.deletedUrls} URL(s), restored ${result.restoredMetrics} metric(s).`);
+    return;
   }
 
   const alertAction = event.target.closest('[data-alert-action]');
   if (alertAction) {
+    event.preventDefault();
     const action = alertAction.dataset.alertAction;
     setStatus(`Updating alert ${alertAction.dataset.alertId}...`);
     await api(`/api/alerts/${alertAction.dataset.alertId}/${action}`, {
@@ -866,6 +902,7 @@ document.addEventListener('click', async (event) => {
     });
     await refresh();
     setStatus(`Alert ${action} complete.`);
+    return;
   }
 
   const selectedUrl = event.target.closest('[data-select-url]');
@@ -874,6 +911,7 @@ document.addEventListener('click', async (event) => {
     if (selectedUrl.checked) state.selectedUrlIds.add(id);
     else state.selectedUrlIds.delete(id);
     updateSelectedCount();
+    return;
   }
 
 });
