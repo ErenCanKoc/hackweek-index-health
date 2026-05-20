@@ -79,6 +79,68 @@ export function upsertUrl(store, values) {
   );
 }
 
+function upsertUrlWithIndex(store, urlIndex, deletedIndex, values) {
+  const now = nowIso();
+  const normalizedUrl = normalizeUrl(values.url);
+  const deleted = deletedIndex.get(normalizedUrl);
+  if (deleted && !values.restoreIfDeleted) return null;
+  if (deleted && values.restoreIfDeleted) {
+    store.state.deletedUrls = store.state.deletedUrls.filter((row) => row.normalizedUrl !== normalizedUrl);
+    deletedIndex.delete(normalizedUrl);
+  }
+
+  const urlPath = pathFromUrl(normalizedUrl);
+  const createCategory = values.category ?? categoryFromPath(urlPath);
+  const createLocale = values.locale ?? detectLocaleFromPath(urlPath);
+  const existing = urlIndex.get(normalizedUrl);
+
+  if (existing) {
+    const updateValues = compact({
+      category: values.category,
+      subCategory: values.subCategory,
+      locale: values.locale,
+      isScaledContent: values.isScaledContent,
+      scaledContentType: values.scaledContentType,
+      isActive: values.isActive ?? true,
+      lastSeenAt: now,
+      lastSitemapSeenAt: values.lastSitemapSeenAt ?? undefined,
+      lastBusinessMetricSeenAt: values.lastBusinessMetricSeenAt ?? undefined,
+      updatedAt: now
+    });
+    if (values.currentPriorityTier && !existing.manualPriorityTier) {
+      updateValues.currentPriorityTier = values.currentPriorityTier;
+    }
+    Object.assign(existing, updateValues);
+    return existing;
+  }
+
+  const record = store.insert('urls', {
+    url: values.url,
+    normalizedUrl,
+    canonicalIdentityUrl: normalizedUrl,
+    category: createCategory,
+    subCategory: values.subCategory ?? null,
+    locale: createLocale,
+    isScaledContent: Boolean(values.isScaledContent),
+    scaledContentType: values.scaledContentType ?? null,
+    isActive: values.isActive ?? true,
+    isManuallyExcluded: false,
+    currentPriorityTier: values.currentPriorityTier ?? 'P3',
+    currentIndexState: 'discovered',
+    currentHealthState: 'unknown',
+    firstSeenAt: values.firstSeenAt ?? now,
+    lastSeenAt: now,
+    lastSitemapSeenAt: values.lastSitemapSeenAt ?? null,
+    lastBusinessMetricSeenAt: values.lastBusinessMetricSeenAt ?? null,
+    lastInspectedAt: null,
+    nextInspectionDueAt: values.nextInspectionDueAt ?? now,
+    createdAt: now,
+    updatedAt: now
+  });
+  urlIndex.set(normalizedUrl, record);
+  return record;
+}
+
 export async function ingestConfiguredSitemaps(store, config, resolvePath, options = {}) {
   const now = nowIso();
   const sources = {
@@ -89,6 +151,11 @@ export async function ingestConfiguredSitemaps(store, config, resolvePath, optio
   };
   const sitemapUrls = await expandSitemapSources(sources, resolvePath, { includeLocal: options.includeLocal });
   let urlCount = 0;
+  const urlIndex = new Map(store.state.urls.map((url) => [url.normalizedUrl, url]));
+  const deletedIndex = new Map((store.state.deletedUrls ?? []).map((url) => [url.normalizedUrl, url]));
+  const urlSourceIndex = new Map(
+    store.state.urlSources.map((source) => [`${source.urlId}|${source.sourceType}|${source.sourceIdentifier}`, source])
+  );
 
   const fetchedSitemaps = await Promise.all(sitemapUrls.map(async (sitemapUrl) => {
     const sitemapInfo = classifySitemap(sitemapUrl, config.policy);
@@ -154,22 +221,26 @@ export async function ingestConfiguredSitemaps(store, config, resolvePath, optio
     urlCount += urlEntries.length;
 
     for (const entry of urlEntries) {
-      const record = upsertUrl(store, {
+      const record = upsertUrlWithIndex(store, urlIndex, deletedIndex, {
         url: entry.loc,
         category: sitemapInfo.detectedCategory,
         subCategory: sitemapInfo.detectedSubcategory,
         locale: sitemapInfo.detectedLocale ?? undefined,
         isScaledContent: sitemapInfo.isScaledContent,
         scaledContentType: sitemapInfo.scaledContentType,
+        currentPriorityTier: sitemapInfo.isScaledContent ? 'P0' : undefined,
         lastSitemapSeenAt: now,
         firstSeenAt: now
       });
       if (!record) continue;
 
-      store.upsert(
-        'urlSources',
-        (row) => row.urlId === record.id && row.sourceType === 'sitemap' && row.sourceIdentifier === sitemapUrl,
-        {
+      const sourceKey = `${record.id}|sitemap|${sitemapUrl}`;
+      const existingSource = urlSourceIndex.get(sourceKey);
+      if (existingSource) {
+        existingSource.lastSeenAt = now;
+        existingSource.updatedAt = now;
+      } else {
+        const source = store.insert('urlSources', {
           urlId: record.id,
           sourceType: 'sitemap',
           sourceIdentifier: sitemapUrl,
@@ -178,12 +249,9 @@ export async function ingestConfiguredSitemaps(store, config, resolvePath, optio
           lastSeenAt: now,
           createdAt: now,
           updatedAt: now
-        },
-        {
-          lastSeenAt: now,
-          updatedAt: now
-        }
-      );
+        });
+        urlSourceIndex.set(sourceKey, source);
+      }
     }
   }
 

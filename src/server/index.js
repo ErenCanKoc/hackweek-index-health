@@ -1198,6 +1198,7 @@ const server = http.createServer(async (request, response) => {
     }
 
     if (pathname === '/api/actions/fetch-sitemaps' && request.method === 'POST') {
+      const body = await readBody(request);
       const beforeUrls = context.store.state.urls.length;
       const cleanedBefore = removeSitemapUrlRecords(context.store);
       const counts = await ingestConfiguredSitemaps(context.store, context.config, context.resolvePath, {
@@ -1207,7 +1208,9 @@ const server = http.createServer(async (request, response) => {
         useDemoUrlsWhenChildFetchFails: false
       });
       const cleanedAfter = removeSitemapUrlRecords(context.store);
-      const thresholds = recalculatePriorities(context.store);
+      const shouldRecalculatePriorities = body.recalculatePriorities === true
+        || parsed.searchParams.get('recalculatePriorities') === 'true';
+      const thresholds = shouldRecalculatePriorities ? recalculatePriorities(context.store) : null;
       const fetchLog = sitemapFetchLog(context.store);
       await context.store.save();
       sendJson(response, 200, {
@@ -1223,6 +1226,7 @@ const server = http.createServer(async (request, response) => {
         urlsBefore: beforeUrls,
         urlsAfter: context.store.state.urls.length,
         urlsAddedOrUpdated: counts.urlCount,
+        priorityRecalculated: shouldRecalculatePriorities,
         thresholds
       });
       return;
