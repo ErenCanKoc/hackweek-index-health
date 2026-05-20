@@ -853,7 +853,8 @@ async function serveStatic(response, requestPath) {
 }
 
 async function createAppContext() {
-  await compactPostgresStateIfNeeded();
+  const autoCompact = await compactPostgresStateIfNeeded();
+  contextLoadInfo.autoCompact = autoCompact;
   const context = await createContext();
   context.store.state.deletedUrls ??= [];
   slimImportBatches(context.store);
@@ -873,20 +874,40 @@ async function createAppContext() {
 let context = null;
 let contextError = null;
 let contextReady = null;
+const contextLoadInfo = {
+  startedAt: null,
+  finishedAt: null,
+  error: null,
+  autoCompact: null
+};
 
-function ensureContextReady() {
+function timeoutAfter(ms) {
+  return new Promise((resolve) => {
+    setTimeout(() => resolve(null), ms);
+  });
+}
+
+function ensureContextReady(options = {}) {
   if (!contextReady) {
+    contextLoadInfo.startedAt = nowIso();
+    contextLoadInfo.finishedAt = null;
+    contextLoadInfo.error = null;
     contextReady = createAppContext()
       .then(async (loadedContext) => {
         context = loadedContext;
+        contextLoadInfo.finishedAt = nowIso();
         return context;
       })
       .catch((error) => {
         contextError = error;
+        contextLoadInfo.error = error.message;
+        contextLoadInfo.finishedAt = nowIso();
         console.error('Failed to initialize app context:', error);
         return null;
       });
   }
+  const timeoutMs = Number(options.timeoutMs ?? 0);
+  if (timeoutMs > 0) return Promise.race([contextReady, timeoutAfter(timeoutMs)]);
   return contextReady;
 }
 
@@ -946,11 +967,18 @@ const server = http.createServer(async (request, response) => {
     const pathname = parsed.pathname;
 
     if (pathname === '/api/health') {
+      if (parsed.searchParams.get('warm') === '1') {
+        ensureContextReady({ timeoutMs: 1 }).catch((error) => {
+          contextError = error;
+          contextLoadInfo.error = error.message;
+        });
+      }
       sendJson(response, 200, {
         ok: true,
         ready: Boolean(context),
-        loading: !context && !contextError,
+        loading: Boolean(contextReady && !context && !contextError),
         error: contextError?.message ?? null,
+        contextLoad: contextLoadInfo,
         now: nowIso()
       });
       return;
@@ -968,6 +996,10 @@ const server = http.createServer(async (request, response) => {
       context = null;
       contextError = null;
       contextReady = null;
+      contextLoadInfo.startedAt = null;
+      contextLoadInfo.finishedAt = null;
+      contextLoadInfo.error = null;
+      contextLoadInfo.autoCompact = result;
       sendJson(response, 200, { ok: true, result });
       return;
     }
@@ -1070,9 +1102,14 @@ const server = http.createServer(async (request, response) => {
       return;
     }
 
-    await ensureContextReady();
+    const contextLoadTimeoutMs = Number(process.env.CONTEXT_LOAD_API_TIMEOUT_MS ?? 15000);
+    await ensureContextReady({ timeoutMs: contextLoadTimeoutMs });
     if (!context) {
-      sendJson(response, 503, { error: contextError?.message ?? 'App context is not ready.' });
+      sendJson(response, 503, {
+        error: contextError?.message ?? 'App context is still loading. Try again in a few seconds.',
+        loading: !contextError,
+        contextLoad: contextLoadInfo
+      });
       return;
     }
 
