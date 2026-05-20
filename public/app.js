@@ -1301,6 +1301,28 @@ document.querySelector('#cleanup-orphans').addEventListener('click', async () =>
   }
 });
 
+document.querySelector('#sync-dashboard-cache').addEventListener('click', async () => {
+  setStatus('Syncing dashboard cache...');
+  document.querySelector('#sync-dashboard-cache').disabled = true;
+  try {
+    const response = await api('/api/settings/maintenance/sync-cache', {
+      method: 'POST',
+      body: '{}',
+      timeoutMs: 30000
+    });
+    document.querySelector('#maintenance-result').innerHTML = `
+      <strong>Dashboard cache synced.</strong>
+      URLs: ${response.cache?.urls ?? 0} · Properties: ${response.cache?.properties ?? 0}
+    `;
+    await refresh();
+    setStatus('Dashboard cache synced.');
+  } catch (error) {
+    setStatus(`Cache sync failed: ${error.message}`);
+  } finally {
+    document.querySelector('#sync-dashboard-cache').disabled = false;
+  }
+});
+
 document.querySelector('#classify-unknown-urls').addEventListener('click', async () => {
   setStatus('Classifying unknown URLs...');
   document.querySelector('#classify-unknown-urls').disabled = true;

@@ -393,6 +393,9 @@ function cleanupStateObject(state, options = {}) {
 }
 
 async function readLiteUrlPage(filters) {
+  const cached = await readCachedUrlPage(filters);
+  if (cached) return cached;
+
   const pool = getLitePool();
   if (!pool) return null;
   const appStateKey = process.env.APP_STATE_KEY || 'default';
@@ -479,6 +482,7 @@ async function updateUrlInPostgresState(id, patch) {
   if (patch.scaledContentType !== undefined) url.scaledContentType = patch.scaledContentType ? String(patch.scaledContentType) : null;
   url.updatedAt = nowIso();
   await writeAppStateObject(state);
+  await refreshDashboardCache().catch((error) => console.error('Dashboard cache refresh failed after URL update:', error.message));
   return url;
 }
 
@@ -501,6 +505,7 @@ async function setUrlExcludedInPostgresState(id, excluded) {
   }
   url.updatedAt = nowIso();
   await writeAppStateObject(state);
+  await refreshDashboardCache().catch((error) => console.error('Dashboard cache refresh failed after URL include/exclude:', error.message));
   return url;
 }
 
@@ -510,6 +515,443 @@ async function cleanupPostgresState(options = {}) {
   const result = cleanupStateObject(state, options);
   await writeAppStateObject(state);
   return result;
+}
+
+async function ensureDashboardCacheTables() {
+  const pool = getLitePool();
+  if (!pool) return false;
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS dashboard_urls (
+      id BIGINT PRIMARY KEY,
+      normalized_url TEXT NOT NULL,
+      url TEXT,
+      category TEXT,
+      locale TEXT,
+      current_priority_tier TEXT,
+      current_index_state TEXT,
+      current_health_state TEXT,
+      is_scaled_content BOOLEAN NOT NULL DEFAULT FALSE,
+      is_manually_excluded BOOLEAN NOT NULL DEFAULT FALSE,
+      is_active BOOLEAN NOT NULL DEFAULT TRUE,
+      next_inspection_due_at TIMESTAMPTZ,
+      first_seen_at TIMESTAMPTZ,
+      last_seen_at TIMESTAMPTZ,
+      row_json JSONB NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_dashboard_urls_priority
+      ON dashboard_urls (current_priority_tier, id);
+    CREATE INDEX IF NOT EXISTS idx_dashboard_urls_category
+      ON dashboard_urls (category, locale, id);
+    CREATE INDEX IF NOT EXISTS idx_dashboard_urls_scaled
+      ON dashboard_urls (is_scaled_content, id);
+    CREATE INDEX IF NOT EXISTS idx_dashboard_urls_normalized
+      ON dashboard_urls (normalized_url);
+
+    CREATE TABLE IF NOT EXISTS dashboard_properties (
+      id BIGINT PRIMARY KEY,
+      property_url TEXT NOT NULL,
+      row_json JSONB NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  return true;
+}
+
+async function refreshDashboardCache() {
+  const pool = getLitePool();
+  if (!pool) return null;
+  const appStateKey = process.env.APP_STATE_KEY || 'default';
+  await ensureDashboardCacheTables();
+  await pool.query('BEGIN');
+  try {
+    await pool.query('TRUNCATE dashboard_urls, dashboard_properties');
+    const urlsResult = await pool.query(
+      `
+        INSERT INTO dashboard_urls (
+          id,
+          normalized_url,
+          url,
+          category,
+          locale,
+          current_priority_tier,
+          current_index_state,
+          current_health_state,
+          is_scaled_content,
+          is_manually_excluded,
+          is_active,
+          next_inspection_due_at,
+          first_seen_at,
+          last_seen_at,
+          row_json,
+          updated_at
+        )
+        SELECT
+          (elem ->> 'id')::bigint,
+          COALESCE(elem ->> 'normalizedUrl', elem ->> 'url'),
+          elem ->> 'url',
+          elem ->> 'category',
+          elem ->> 'locale',
+          elem ->> 'currentPriorityTier',
+          elem ->> 'currentIndexState',
+          elem ->> 'currentHealthState',
+          COALESCE((elem ->> 'isScaledContent')::boolean, false),
+          COALESCE((elem ->> 'isManuallyExcluded')::boolean, false),
+          COALESCE((elem ->> 'isActive')::boolean, true),
+          NULLIF(elem ->> 'nextInspectionDueAt', '')::timestamptz,
+          NULLIF(elem ->> 'firstSeenAt', '')::timestamptz,
+          NULLIF(elem ->> 'lastSeenAt', '')::timestamptz,
+          elem,
+          now()
+        FROM app_state,
+          jsonb_array_elements(COALESCE(state -> 'urls', '[]'::jsonb)) AS rows(elem)
+        WHERE app_state.id = $1
+          AND elem ? 'id'
+        ON CONFLICT (id) DO UPDATE
+          SET normalized_url = EXCLUDED.normalized_url,
+              url = EXCLUDED.url,
+              category = EXCLUDED.category,
+              locale = EXCLUDED.locale,
+              current_priority_tier = EXCLUDED.current_priority_tier,
+              current_index_state = EXCLUDED.current_index_state,
+              current_health_state = EXCLUDED.current_health_state,
+              is_scaled_content = EXCLUDED.is_scaled_content,
+              is_manually_excluded = EXCLUDED.is_manually_excluded,
+              is_active = EXCLUDED.is_active,
+              next_inspection_due_at = EXCLUDED.next_inspection_due_at,
+              first_seen_at = EXCLUDED.first_seen_at,
+              last_seen_at = EXCLUDED.last_seen_at,
+              row_json = EXCLUDED.row_json,
+              updated_at = now()
+      `,
+      [appStateKey]
+    );
+    const propertiesResult = await pool.query(
+      `
+        INSERT INTO dashboard_properties (id, property_url, row_json, updated_at)
+        SELECT
+          (elem ->> 'id')::bigint,
+          COALESCE(elem ->> 'propertyUrl', elem ->> 'property_url', ''),
+          elem,
+          now()
+        FROM app_state,
+          jsonb_array_elements(COALESCE(state -> 'properties', '[]'::jsonb)) AS rows(elem)
+        WHERE app_state.id = $1
+          AND elem ? 'id'
+        ON CONFLICT (id) DO UPDATE
+          SET property_url = EXCLUDED.property_url,
+              row_json = EXCLUDED.row_json,
+              updated_at = now()
+      `,
+      [appStateKey]
+    );
+    await pool.query('COMMIT');
+    return {
+      urls: urlsResult.rowCount,
+      properties: propertiesResult.rowCount
+    };
+  } catch (error) {
+    await pool.query('ROLLBACK');
+    throw error;
+  }
+}
+
+async function cachedTableCount(tableName) {
+  const pool = getLitePool();
+  if (!pool) return 0;
+  try {
+    await ensureDashboardCacheTables();
+    const result = await pool.query(`SELECT COUNT(*)::int AS count FROM ${tableName}`);
+    return Number(result.rows[0]?.count ?? 0);
+  } catch {
+    return 0;
+  }
+}
+
+async function readCachedUrlPage(filters) {
+  const pool = getLitePool();
+  if (!pool) return null;
+  await ensureDashboardCacheTables();
+  if (await cachedTableCount('dashboard_urls') === 0 && process.env.AUTO_SYNC_DASHBOARD_CACHE !== 'false') {
+    await refreshDashboardCache();
+  }
+
+  const limit = Math.max(1, Math.min(Number(filters.limit || 150), 500));
+  const offset = Math.max(0, Number(filters.offset || 0) || 0);
+  const params = [];
+  const where = [];
+  const addParam = (value) => {
+    params.push(value);
+    return `$${params.length}`;
+  };
+
+  if (filters.priorityTier) where.push(`current_priority_tier = ${addParam(filters.priorityTier)}`);
+  if (filters.indexState) where.push(`current_index_state = ${addParam(filters.indexState)}`);
+  if (filters.category) where.push(`category = ${addParam(filters.category)}`);
+  if (filters.locale) where.push(`locale = ${addParam(filters.locale)}`);
+  if (filters.scaled === 'true') where.push('is_scaled_content = true');
+  if (filters.scaled === 'false') where.push('is_scaled_content = false');
+  if (filters.q) where.push(`LOWER(normalized_url) LIKE ${addParam(`%${String(filters.q).toLowerCase()}%`)}`);
+
+  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  const countResult = await pool.query(`SELECT COUNT(*)::int AS total FROM dashboard_urls ${whereSql}`, params);
+  const rowsResult = await pool.query(
+    `
+      SELECT row_json
+      FROM dashboard_urls
+      ${whereSql}
+      ORDER BY id ASC
+      OFFSET ${addParam(offset)}
+      LIMIT ${addParam(limit)}
+    `,
+    params
+  );
+  const total = Number(countResult.rows[0]?.total ?? 0);
+  return {
+    rows: rowsResult.rows.map((row) => row.row_json),
+    total,
+    limit,
+    offset,
+    hasMore: offset + limit < total,
+    lite: true,
+    cached: true
+  };
+}
+
+async function readCachedProperties() {
+  const pool = getLitePool();
+  if (!pool) return null;
+  await ensureDashboardCacheTables();
+  if (await cachedTableCount('dashboard_properties') === 0 && process.env.AUTO_SYNC_DASHBOARD_CACHE !== 'false') {
+    await refreshDashboardCache();
+  }
+  const result = await pool.query('SELECT row_json FROM dashboard_properties ORDER BY property_url ASC');
+  return result.rows.map((row) => row.row_json);
+}
+
+function normalizeUrlsForDeletion(values) {
+  return normalizeUrlList(values).map((value) => {
+    try {
+      return normalizeUrl(value);
+    } catch {
+      return value;
+    }
+  });
+}
+
+function deletedUrlTombstonesSql() {
+  return `
+    COALESCE((
+      SELECT jsonb_agg(jsonb_build_object(
+        'normalizedUrl', elem ->> 'normalizedUrl',
+        'originalUrl', elem ->> 'url',
+        'deletedAt', $4::text,
+        'reason', $5::text,
+        'createdAt', $4::text,
+        'updatedAt', $4::text
+      ))
+      FROM jsonb_array_elements(COALESCE(app_state.state -> 'urls', '[]'::jsonb)) AS rows(elem)
+      WHERE (elem ->> 'id')::numeric = ANY(target.ids)
+    ), '[]'::jsonb)
+  `;
+}
+
+function filteredUrlStateObjectSql({ removeSelectedSources = false } = {}) {
+  const sourceFilter = removeSelectedSources
+    ? `
+      AND NOT (
+        COALESCE(elem ->> 'sourceSitemapUrl', elem ->> 'sourceIdentifier', '') = ANY($2::text[])
+      )
+    `
+    : '';
+  return `
+    jsonb_build_object(
+      'urls', COALESCE((
+        SELECT jsonb_agg(elem ORDER BY ord)
+        FROM jsonb_array_elements(COALESCE(app_state.state -> 'urls', '[]'::jsonb)) WITH ORDINALITY AS rows(elem, ord)
+        WHERE NOT ((elem ->> 'id')::numeric = ANY(target.ids))
+      ), '[]'::jsonb),
+      'urlSources', COALESCE((
+        SELECT jsonb_agg(elem ORDER BY ord)
+        FROM jsonb_array_elements(COALESCE(app_state.state -> 'urlSources', '[]'::jsonb)) WITH ORDINALITY AS rows(elem, ord)
+        WHERE NOT ((elem ->> 'urlId')::numeric = ANY(target.ids))
+        ${sourceFilter}
+      ), '[]'::jsonb),
+      'prioritySnapshots', COALESCE((
+        SELECT jsonb_agg(elem ORDER BY ord)
+        FROM jsonb_array_elements(COALESCE(app_state.state -> 'prioritySnapshots', '[]'::jsonb)) WITH ORDINALITY AS rows(elem, ord)
+        WHERE NOT ((elem ->> 'urlId')::numeric = ANY(target.ids))
+      ), '[]'::jsonb),
+      'inspectionJobs', COALESCE((
+        SELECT jsonb_agg(elem ORDER BY ord)
+        FROM jsonb_array_elements(COALESCE(app_state.state -> 'inspectionJobs', '[]'::jsonb)) WITH ORDINALITY AS rows(elem, ord)
+        WHERE NOT ((elem ->> 'urlId')::numeric = ANY(target.ids))
+      ), '[]'::jsonb),
+      'inspectionResults', COALESCE((
+        SELECT jsonb_agg(elem ORDER BY ord)
+        FROM jsonb_array_elements(COALESCE(app_state.state -> 'inspectionResults', '[]'::jsonb)) WITH ORDINALITY AS rows(elem, ord)
+        WHERE NOT ((elem ->> 'urlId')::numeric = ANY(target.ids))
+      ), '[]'::jsonb),
+      'stateTransitions', COALESCE((
+        SELECT jsonb_agg(elem ORDER BY ord)
+        FROM jsonb_array_elements(COALESCE(app_state.state -> 'stateTransitions', '[]'::jsonb)) WITH ORDINALITY AS rows(elem, ord)
+        WHERE NOT ((elem ->> 'urlId')::numeric = ANY(target.ids))
+      ), '[]'::jsonb),
+      'technicalChecks', COALESCE((
+        SELECT jsonb_agg(elem ORDER BY ord)
+        FROM jsonb_array_elements(COALESCE(app_state.state -> 'technicalChecks', '[]'::jsonb)) WITH ORDINALITY AS rows(elem, ord)
+        WHERE NOT ((elem ->> 'urlId')::numeric = ANY(target.ids))
+      ), '[]'::jsonb),
+      'healthStatuses', COALESCE((
+        SELECT jsonb_agg(elem ORDER BY ord)
+        FROM jsonb_array_elements(COALESCE(app_state.state -> 'healthStatuses', '[]'::jsonb)) WITH ORDINALITY AS rows(elem, ord)
+        WHERE NOT ((elem ->> 'urlId')::numeric = ANY(target.ids))
+      ), '[]'::jsonb),
+      'alerts', COALESCE((
+        SELECT jsonb_agg(elem ORDER BY ord)
+        FROM jsonb_array_elements(COALESCE(app_state.state -> 'alerts', '[]'::jsonb)) WITH ORDINALITY AS rows(elem, ord)
+        WHERE NOT ((elem ->> 'urlId')::numeric = ANY(target.ids))
+      ), '[]'::jsonb),
+      'gscPerformanceMetrics', COALESCE((
+        SELECT jsonb_agg(elem ORDER BY ord)
+        FROM jsonb_array_elements(COALESCE(app_state.state -> 'gscPerformanceMetrics', '[]'::jsonb)) WITH ORDINALITY AS rows(elem, ord)
+        WHERE NOT ((elem ->> 'urlId')::numeric = ANY(target.ids))
+      ), '[]'::jsonb),
+      'businessMetrics', COALESCE((
+        SELECT jsonb_agg(elem ORDER BY ord)
+        FROM jsonb_array_elements(COALESCE(app_state.state -> 'businessMetrics', '[]'::jsonb)) WITH ORDINALITY AS rows(elem, ord)
+        WHERE NOT ((elem ->> 'urlId')::numeric = ANY(target.ids))
+      ), '[]'::jsonb),
+      'deletedUrls', COALESCE(app_state.state -> 'deletedUrls', '[]'::jsonb) || ${deletedUrlTombstonesSql()},
+      'meta', COALESCE(app_state.state -> 'meta', '{}'::jsonb) || jsonb_build_object('updatedAt', $4::text)
+    )
+  `;
+}
+
+async function deleteUrlsInPostgresState({ ids = [], urls = [], reason = 'manual_delete' } = {}) {
+  const pool = getLitePool();
+  if (!pool) return null;
+  const appStateKey = process.env.APP_STATE_KEY || 'default';
+  const numericIds = normalizeIdList([ids]);
+  const normalizedUrls = normalizeUrlsForDeletion([urls]);
+  const now = nowIso();
+  const result = await pool.query(
+    `
+      WITH target AS (
+        SELECT COALESCE(array_agg(DISTINCT (elem ->> 'id')::numeric), ARRAY[]::numeric[]) AS ids
+        FROM app_state,
+          jsonb_array_elements(COALESCE(state -> 'urls', '[]'::jsonb)) AS rows(elem)
+        WHERE id = $1
+          AND (
+            (elem ->> 'id')::numeric = ANY($2::numeric[])
+            OR COALESCE(elem ->> 'normalizedUrl', '') = ANY($3::text[])
+            OR COALESCE(elem ->> 'url', '') = ANY($3::text[])
+          )
+      ),
+      updated AS (
+        UPDATE app_state
+        SET state = app_state.state || ${filteredUrlStateObjectSql()},
+            updated_at = now()
+        FROM target
+        WHERE app_state.id = $1
+        RETURNING COALESCE(array_length(target.ids, 1), 0)::int AS deleted
+      )
+      SELECT deleted FROM updated
+    `,
+    [appStateKey, numericIds, normalizedUrls, now, reason]
+  );
+  return Number(result.rows[0]?.deleted ?? 0);
+}
+
+async function deleteFetchedSitemapsInPostgresState(sitemapUrls) {
+  const pool = getLitePool();
+  if (!pool) return null;
+  const appStateKey = process.env.APP_STATE_KEY || 'default';
+  const urls = normalizeUrlList([sitemapUrls]);
+  const now = nowIso();
+  const result = await pool.query(
+    `
+      WITH
+      candidate_ids AS (
+        SELECT DISTINCT (elem ->> 'urlId')::numeric AS id
+        FROM app_state,
+          jsonb_array_elements(COALESCE(state -> 'urlSources', '[]'::jsonb)) AS rows(elem)
+        WHERE app_state.id = $1
+          AND COALESCE(elem ->> 'sourceSitemapUrl', elem ->> 'sourceIdentifier', '') = ANY($2::text[])
+      ),
+      remaining_source_ids AS (
+        SELECT DISTINCT (elem ->> 'urlId')::numeric AS id
+        FROM app_state,
+          jsonb_array_elements(COALESCE(state -> 'urlSources', '[]'::jsonb)) AS rows(elem)
+        WHERE app_state.id = $1
+          AND COALESCE(elem ->> 'sourceSitemapUrl', elem ->> 'sourceIdentifier', '') <> ALL($2::text[])
+      ),
+      protected_ids AS (
+        SELECT DISTINCT id FROM (
+          SELECT (elem ->> 'urlId')::numeric AS id
+          FROM app_state, jsonb_array_elements(COALESCE(state -> 'inspectionResults', '[]'::jsonb)) AS rows(elem)
+          WHERE app_state.id = $1
+          UNION
+          SELECT (elem ->> 'urlId')::numeric AS id
+          FROM app_state, jsonb_array_elements(COALESCE(state -> 'gscPerformanceMetrics', '[]'::jsonb)) AS rows(elem)
+          WHERE app_state.id = $1
+          UNION
+          SELECT (elem ->> 'urlId')::numeric AS id
+          FROM app_state, jsonb_array_elements(COALESCE(state -> 'businessMetrics', '[]'::jsonb)) AS rows(elem)
+          WHERE app_state.id = $1
+          UNION
+          SELECT (elem ->> 'urlId')::numeric AS id
+          FROM app_state, jsonb_array_elements(COALESCE(state -> 'technicalChecks', '[]'::jsonb)) AS rows(elem)
+          WHERE app_state.id = $1
+          UNION
+          SELECT (elem ->> 'urlId')::numeric AS id
+          FROM app_state, jsonb_array_elements(COALESCE(state -> 'alerts', '[]'::jsonb)) AS rows(elem)
+          WHERE app_state.id = $1 AND elem ->> 'status' = 'active'
+        ) AS rows
+        WHERE id IS NOT NULL
+      ),
+      target AS (
+        SELECT COALESCE(array_agg(candidate_ids.id), ARRAY[]::numeric[]) AS ids
+        FROM candidate_ids
+        WHERE NOT EXISTS (SELECT 1 FROM remaining_source_ids WHERE remaining_source_ids.id = candidate_ids.id)
+          AND NOT EXISTS (SELECT 1 FROM protected_ids WHERE protected_ids.id = candidate_ids.id)
+      ),
+      counts AS (
+        SELECT
+          COALESCE((
+            SELECT COUNT(*)::int
+            FROM app_state,
+              jsonb_array_elements(COALESCE(state -> 'sitemaps', '[]'::jsonb)) AS rows(elem)
+            WHERE app_state.id = $1 AND elem ->> 'sitemapUrl' = ANY($2::text[])
+          ), 0) AS deleted_sitemaps
+      ),
+      updated AS (
+        UPDATE app_state
+        SET state = app_state.state
+          || jsonb_build_object(
+            'sitemaps', COALESCE((
+              SELECT jsonb_agg(elem ORDER BY ord)
+              FROM jsonb_array_elements(COALESCE(app_state.state -> 'sitemaps', '[]'::jsonb)) WITH ORDINALITY AS rows(elem, ord)
+              WHERE NOT (elem ->> 'sitemapUrl' = ANY($2::text[]))
+            ), '[]'::jsonb)
+          )
+          || ${filteredUrlStateObjectSql({ removeSelectedSources: true })},
+          updated_at = now()
+        FROM target
+        WHERE app_state.id = $1
+        RETURNING COALESCE(array_length(target.ids, 1), 0)::int AS deleted_urls
+      )
+      SELECT counts.deleted_sitemaps, updated.deleted_urls
+      FROM counts, updated
+    `,
+    [appStateKey, urls, [], now, 'sitemap_delete']
+  );
+  return {
+    deletedSitemaps: Number(result.rows[0]?.deleted_sitemaps ?? 0),
+    deletedUrls: Number(result.rows[0]?.deleted_urls ?? 0),
+    cleanedOrphanUrls: 0
+  };
 }
 
 function liteScaledDashboardFromArrays(urls, alerts) {
@@ -703,7 +1145,7 @@ async function handleLiteApi(pathname, parsed, request, response) {
   }
 
   if (pathname === '/api/properties') {
-    sendJson(response, 200, await readAppStateArray('properties'));
+    sendJson(response, 200, await readCachedProperties());
     return true;
   }
 
@@ -739,13 +1181,56 @@ async function handleLiteApi(pathname, parsed, request, response) {
     return true;
   }
 
+  if (pathname === '/api/settings/delete-urls' && request.method === 'POST') {
+    const body = await readBody(request);
+    const ids = normalizeIdList([body.ids, body.id]);
+    const urls = normalizeUrlsForDeletion([body.urls, body.bulkUrls, body.url]);
+    const deleted = await deleteUrlsInPostgresState({ ids, urls });
+    await refreshDashboardCache().catch((error) => console.error('Dashboard cache refresh failed after URL delete:', error.message));
+    sendJson(response, 200, { ok: true, matched: deleted, deleted, lite: true });
+    return true;
+  }
+
+  if (pathname === '/api/settings/sitemaps/delete' && request.method === 'POST') {
+    const body = await readBody(request);
+    const sitemapUrls = normalizeUrlList([body.sitemapUrls, body.sitemapUrl]);
+    const sources = await readJson('config/sources.json');
+    const beforeExcluded = sources.excludedSitemapUrls?.length ?? 0;
+    const selected = new Set(sitemapUrls);
+    sources.excludedSitemapUrls = [...new Set([...(sources.excludedSitemapUrls ?? []), ...sitemapUrls])];
+    sources.sitemapIndexUrls = (sources.sitemapIndexUrls ?? []).filter((url) => !selected.has(url));
+    sources.childSitemapUrls = (sources.childSitemapUrls ?? []).filter((url) => !selected.has(url));
+    await writeJson('config/sources.json', sources);
+    await reloadRuntimeConfig();
+    const result = await deleteFetchedSitemapsInPostgresState(sitemapUrls);
+    await refreshDashboardCache().catch((error) => console.error('Dashboard cache refresh failed after sitemap delete:', error.message));
+    sendJson(response, 200, {
+      ok: true,
+      sources,
+      deletedSitemaps: result.deletedSitemaps,
+      deletedUrlSources: null,
+      deletedUrls: result.deletedUrls,
+      cleanedOrphanUrls: result.cleanedOrphanUrls,
+      excludedSitemapUrls: sources.excludedSitemapUrls.length - beforeExcluded,
+      lite: true
+    });
+    return true;
+  }
+
   if (pathname === '/api/settings/maintenance/cleanup-orphans' && request.method === 'POST') {
     const body = await readBody(request);
     const result = await cleanupPostgresState({
       removeOrphanUrls: body.removeOrphanUrls !== false,
       clearPrioritySnapshots: body.clearPrioritySnapshots !== false
     });
-    sendJson(response, 200, { ok: true, result, lite: true });
+    const cache = await refreshDashboardCache().catch((error) => ({ error: error.message }));
+    sendJson(response, 200, { ok: true, result, cache, lite: true });
+    return true;
+  }
+
+  if (pathname === '/api/settings/maintenance/sync-cache' && request.method === 'POST') {
+    const cache = await refreshDashboardCache();
+    sendJson(response, 200, { ok: true, cache, lite: true });
     return true;
   }
 
