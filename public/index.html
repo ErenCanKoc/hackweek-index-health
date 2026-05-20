@@ -225,8 +225,10 @@
                 <div class="actions settings-actions">
                   <button id="save-sources" class="button primary">Save Sources</button>
                   <button id="fetch-sitemaps" class="button secondary">Fetch Sitemap URLs</button>
+                  <button id="delete-selected-sources" class="button secondary">Delete Selected Sources</button>
                 </div>
                 <div id="source-summary" class="setting-note"></div>
+                <div id="source-management" class="table-wrap slim"></div>
                 <div id="sitemap-fetch-log" class="table-wrap slim"></div>
               </div>
             </section>
@@ -290,26 +292,41 @@
                     <input id="csv-import-result" type="text" readonly value="No import yet">
                   </label>
                   <label class="span-2">
+                    CSV file
+                    <input id="csv-import-file" type="file" accept=".csv,text/csv">
+                  </label>
+                  <label class="span-2">
                     CSV data
                     <textarea id="csv-import-text" rows="8" placeholder="url,click,impression,avg_position&#10;https://www.jotform.com/example,120,4000,8.2"></textarea>
                   </label>
                 </div>
-                <button id="import-csv" class="button primary">Import CSV</button>
+                <div class="actions settings-actions">
+                  <button id="preview-csv" class="button secondary">Preview CSV</button>
+                  <button id="import-csv" class="button primary" disabled>Apply Import</button>
+                  <button id="cancel-csv-import" class="button secondary" disabled>Cancel</button>
+                </div>
+                <div id="csv-preview" class="setting-note"></div>
               </div>
             </section>
 
             <section class="panel">
-              <div class="panel-header">
-                <h2>Manual Overrides</h2>
-              </div>
-              <div class="settings-panel">
-                <label>
-                  Bulk delete URLs
-                  <textarea id="bulk-delete-urls" rows="5" placeholder="https://www.jotform.com/example-page&#10;https://www.jotform.com/another-page"></textarea>
-                </label>
-                <button id="bulk-delete-urls-button" class="button secondary">Delete URLs</button>
-              </div>
-              <div id="manual-overrides" class="table-wrap"></div>
+              <details class="panel-details">
+                <summary class="panel-header">
+                  <h2>Manual Overrides</h2>
+                </summary>
+                <div class="settings-panel">
+                  <label>
+                    Search URL
+                    <input id="manual-overrides-search" type="search" placeholder="Search manual override URLs">
+                  </label>
+                  <label>
+                    Bulk delete URLs
+                    <textarea id="bulk-delete-urls" rows="5" placeholder="https://www.jotform.com/example-page&#10;https://www.jotform.com/another-page"></textarea>
+                  </label>
+                  <button id="bulk-delete-urls-button" class="button secondary">Delete URLs</button>
+                </div>
+                <div id="manual-overrides" class="table-wrap"></div>
+              </details>
             </section>
             <section class="panel">
               <div class="panel-header">

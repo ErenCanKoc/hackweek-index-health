@@ -484,6 +484,54 @@ async function createAppContext() {
 let context = await createAppContext();
 await context.store.save();
 
+const cronState = {
+  dailySitemapFetchEnabled: process.env.DAILY_SITEMAP_FETCH_ENABLED !== 'false',
+  running: false,
+  lastRunAt: null,
+  lastResult: null,
+  lastError: null
+};
+
+async function runDailySitemapFetchCron(reason = 'daily_cron') {
+  if (!cronState.dailySitemapFetchEnabled || cronState.running) return null;
+  cronState.running = true;
+  cronState.lastRunAt = nowIso();
+  try {
+    const cleanedBefore = removeSitemapUrlRecords(context.store);
+    const counts = await ingestConfiguredSitemaps(context.store, context.config, context.resolvePath, {
+      includeLocal: false,
+      fetchChildSitemaps: true,
+      useDemoUrlsWhenChildFetchIsOff: false,
+      useDemoUrlsWhenChildFetchFails: false
+    });
+    const cleanedAfter = removeSitemapUrlRecords(context.store);
+    const thresholds = recalculatePriorities(context.store);
+    await context.store.save();
+    cronState.lastResult = {
+      reason,
+      counts,
+      cleanedSitemapUrlRecords: cleanedBefore + cleanedAfter,
+      thresholds
+    };
+    cronState.lastError = null;
+    return cronState.lastResult;
+  } catch (error) {
+    cronState.lastError = error.message;
+    return null;
+  } finally {
+    cronState.running = false;
+  }
+}
+
+if (cronState.dailySitemapFetchEnabled) {
+  setInterval(() => {
+    runDailySitemapFetchCron().catch((error) => {
+      cronState.lastError = error.message;
+      cronState.running = false;
+    });
+  }, 24 * 60 * 60 * 1000);
+}
+
 const server = http.createServer(async (request, response) => {
   try {
     const parsed = new URL(request.url, `http://${request.headers.host}`);
@@ -536,6 +584,7 @@ const server = http.createServer(async (request, response) => {
         sources: context.config.sources,
         inspection: context.config.policy.inspection,
         propertyMappings: context.config.propertyMappings,
+        cron: cronState,
         googleAuth: await googleAuthStatus(),
         oauthRedirectUri: `${publicOrigin(parsed.origin)}/auth/google/callback`
       });
@@ -590,6 +639,27 @@ const server = http.createServer(async (request, response) => {
       await writeJson('config/sources.json', sources);
       await reloadRuntimeConfig();
       sendJson(response, 200, { ok: true, sources, added, skipped });
+      return;
+    }
+
+    if (pathname === '/api/settings/sources/delete' && request.method === 'POST') {
+      const body = await readBody(request);
+      const sources = await readJson('config/sources.json');
+      const sitemapIndexUrls = new Set(normalizeUrlList([body.sitemapIndexUrls, body.sitemapIndexUrl]));
+      const childSitemapUrls = new Set(normalizeUrlList([body.childSitemapUrls, body.childSitemapUrl]));
+      const before = {
+        sitemapIndexUrls: sources.sitemapIndexUrls?.length ?? 0,
+        childSitemapUrls: sources.childSitemapUrls?.length ?? 0
+      };
+      sources.sitemapIndexUrls = (sources.sitemapIndexUrls ?? []).filter((url) => !sitemapIndexUrls.has(url));
+      sources.childSitemapUrls = (sources.childSitemapUrls ?? []).filter((url) => !childSitemapUrls.has(url));
+      const deleted = {
+        sitemapIndexUrls: before.sitemapIndexUrls - sources.sitemapIndexUrls.length,
+        childSitemapUrls: before.childSitemapUrls - sources.childSitemapUrls.length
+      };
+      await writeJson('config/sources.json', sources);
+      await reloadRuntimeConfig();
+      sendJson(response, 200, { ok: true, sources, deleted });
       return;
     }
 
@@ -679,6 +749,34 @@ const server = http.createServer(async (request, response) => {
         urlsAfter: context.store.state.urls.length,
         urlsAdded: context.store.state.urls.length - beforeUrls,
         thresholds
+      });
+      return;
+    }
+
+    if (pathname === '/api/settings/csv-preview' && request.method === 'POST') {
+      const body = await readBody(request);
+      const csvText = String(body.csvText ?? body.csv ?? '').trim();
+      const importType = String(body.importType ?? body.type ?? '').trim();
+      if (!csvText) {
+        sendJson(response, 400, { error: 'csvText is required' });
+        return;
+      }
+      if (!['gsc', 'p30_users', 'signup_count'].includes(importType)) {
+        sendJson(response, 400, { error: 'importType must be gsc, p30_users, or signup_count' });
+        return;
+      }
+      const lines = csvText.split(/\r?\n/).filter((line) => line.trim());
+      const headers = lines[0]?.split(',').map((item) => item.trim().replace(/^"|"$/g, '')) ?? [];
+      const warnings = [];
+      if (importType === 'gsc' && !headers.includes('url')) warnings.push('GSC CSV should include a url column.');
+      if (importType !== 'gsc' && !headers.includes('path')) warnings.push('P30/signup wide CSV should include a path column.');
+      sendJson(response, 200, {
+        ok: true,
+        importType,
+        rowCount: Math.max(lines.length - 1, 0),
+        headers,
+        sampleRows: lines.slice(1, 6),
+        warnings
       });
       return;
     }

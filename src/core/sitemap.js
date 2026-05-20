@@ -115,18 +115,15 @@ export async function expandSitemapSources(sources, resolvePath, options = {}) {
   }
 
   if (includeLocal) {
-    for (const file of sources.localSitemapIndexFiles ?? []) {
-      sitemapUrls.push(...await expandSource(resolvePath(file)));
-    }
+    const expanded = await Promise.all((sources.localSitemapIndexFiles ?? []).map((file) => expandSource(resolvePath(file))));
+    sitemapUrls.push(...expanded.flat());
   }
 
-  for (const indexUrl of sources.sitemapIndexUrls ?? []) {
-    sitemapUrls.push(...await expandSource(indexUrl));
-  }
+  const expandedIndexes = await Promise.all((sources.sitemapIndexUrls ?? []).map((indexUrl) => expandSource(indexUrl)));
+  sitemapUrls.push(...expandedIndexes.flat());
 
-  for (const childSitemapUrl of sources.childSitemapUrls ?? []) {
-    sitemapUrls.push(...await expandSource(childSitemapUrl));
-  }
+  const expandedChildren = await Promise.all((sources.childSitemapUrls ?? []).map((childSitemapUrl) => expandSource(childSitemapUrl)));
+  sitemapUrls.push(...expandedChildren.flat());
 
   return [...new Set(sitemapUrls)];
 }

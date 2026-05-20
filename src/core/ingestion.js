@@ -90,8 +90,38 @@ export async function ingestConfiguredSitemaps(store, config, resolvePath, optio
   const sitemapUrls = await expandSitemapSources(sources, resolvePath, { includeLocal: options.includeLocal });
   let urlCount = 0;
 
-  for (const sitemapUrl of sitemapUrls) {
+  const fetchedSitemaps = await Promise.all(sitemapUrls.map(async (sitemapUrl) => {
     const sitemapInfo = classifySitemap(sitemapUrl, config.policy);
+    let urlEntries = [];
+    let lastFetchStatus = 'child_fetch_off';
+    let lastSuccessfulFetchAt = null;
+
+    if (sources.fetchChildSitemaps) {
+      try {
+        const sitemapXml = await fetchText(sitemapUrl);
+        urlEntries = extractSitemapUrlEntries(sitemapXml);
+        lastFetchStatus = 'success';
+        lastSuccessfulFetchAt = now;
+      } catch (error) {
+        lastFetchStatus = `fetch_failed: ${error.message}`;
+      }
+    }
+
+    if (!urlEntries.length && (sources.useDemoUrlsWhenChildFetchIsOff || sources.useDemoUrlsWhenChildFetchFails)) {
+      urlEntries = generateDemoUrlsForSitemap(sitemapUrl).map((loc) => ({ loc, lastmod: null }));
+      lastFetchStatus = `${lastFetchStatus}+demo_generated`;
+    }
+
+    return { sitemapUrl, sitemapInfo, urlEntries, lastFetchStatus, lastSuccessfulFetchAt };
+  }));
+
+  const fetchFailures = fetchedSitemaps.filter((item) => item.lastFetchStatus.startsWith('fetch_failed'));
+  if (fetchFailures.length && !sources.useDemoUrlsWhenChildFetchFails) {
+    throw new Error(fetchFailures.map((item) => `${item.sitemapUrl}: ${item.lastFetchStatus}`).join(' | '));
+  }
+
+  for (const fetched of fetchedSitemaps) {
+    const { sitemapUrl, sitemapInfo } = fetched;
     const sitemap = store.upsert(
       'sitemaps',
       (row) => row.sitemapUrl === sitemapUrl,
@@ -113,28 +143,10 @@ export async function ingestConfiguredSitemaps(store, config, resolvePath, optio
       }
     );
 
-    let urlEntries = [];
-    if (sources.fetchChildSitemaps) {
-      try {
-        const sitemapXml = await fetchText(sitemapUrl);
-        urlEntries = extractSitemapUrlEntries(sitemapXml);
-        sitemap.lastFetchStatus = 'success';
-        sitemap.lastSuccessfulFetchAt = now;
-      } catch (error) {
-        sitemap.lastFetchStatus = `fetch_failed: ${error.message}`;
-        if (!sources.useDemoUrlsWhenChildFetchFails) {
-          throw error;
-        }
-      }
-    } else {
-      sitemap.lastFetchStatus = 'child_fetch_off';
-    }
+    sitemap.lastFetchStatus = fetched.lastFetchStatus;
+    if (fetched.lastSuccessfulFetchAt) sitemap.lastSuccessfulFetchAt = fetched.lastSuccessfulFetchAt;
 
-    if (!urlEntries.length && (sources.useDemoUrlsWhenChildFetchIsOff || sources.useDemoUrlsWhenChildFetchFails)) {
-      urlEntries = generateDemoUrlsForSitemap(sitemapUrl).map((loc) => ({ loc, lastmod: null }));
-      sitemap.lastFetchStatus = `${sitemap.lastFetchStatus}+demo_generated`;
-    }
-
+    let urlEntries = fetched.urlEntries;
     const skippedSitemapLocs = urlEntries.filter((entry) => isSitemapLikeUrl(entry.loc)).length;
     urlEntries = urlEntries.filter((entry) => !isSitemapLikeUrl(entry.loc));
     sitemap.urlCount = urlEntries.length;

@@ -4,7 +4,8 @@ const state = {
   gscSites: [],
   openUrlId: null,
   openUrlDetail: null,
-  selectedUrlIds: new Set()
+  selectedUrlIds: new Set(),
+  pendingCsvImport: null
 };
 
 const titleMap = {
@@ -88,6 +89,13 @@ function propertySource(property) {
 function updateSelectedCount() {
   const target = document.querySelector('#selected-url-count');
   if (target) target.textContent = `${state.selectedUrlIds.size} selected`;
+}
+
+function sourceRows(settings) {
+  return [
+    ...(settings.sources.sitemapIndexUrls ?? []).map((url) => ({ type: 'sitemapIndexUrls', label: 'index', url })),
+    ...(settings.sources.childSitemapUrls ?? []).map((url) => ({ type: 'childSitemapUrls', label: 'child', url }))
+  ];
 }
 
 async function deleteUrlIds(ids) {
@@ -497,12 +505,23 @@ async function loadSettings() {
   document.querySelector('#fetch-child-sitemaps').checked = Boolean(settings.sources.fetchChildSitemaps);
   document.querySelector('#source-summary').innerHTML = `
     <strong>How this works:</strong> These sitemap URLs are discovery sources only. The engine fetches them, extracts page URLs, and inspects page URLs only.<br>
+    <strong>Daily cron:</strong> ${settings.cron?.dailySitemapFetchEnabled ? 'enabled' : 'disabled'}${settings.cron?.lastRunAt ? `, last run ${fmtDate(settings.cron.lastRunAt)}` : ''}${settings.cron?.lastError ? `, last error: ${esc(settings.cron.lastError)}` : ''}<br>
     <strong>Sitemap indexes:</strong> ${(settings.sources.sitemapIndexUrls ?? []).length}<br>
     <div class="source-list">${(settings.sources.sitemapIndexUrls ?? []).map((url) => `<code>${esc(url)}</code>`).join('') || 'none'}</div>
     <strong>Child sitemaps:</strong> ${(settings.sources.childSitemapUrls ?? []).length}<br>
     <div class="source-list">${(settings.sources.childSitemapUrls ?? []).map((url) => `<code>${esc(url)}</code>`).join('') || 'none'}</div>
     <strong>Manual URL files:</strong> ${(settings.sources.manualUrlFiles ?? []).map(esc).join(', ') || 'none'}
   `;
+  document.querySelector('#source-management').innerHTML = table(
+    ['Select', 'Type', 'Source URL'],
+    sourceRows(settings).map((source) => `
+      <tr>
+        <td><input type="checkbox" data-source-type="${source.type}" data-source-url="${esc(source.url)}"></td>
+        <td>${esc(source.label)}</td>
+        <td><code>${esc(source.url)}</code></td>
+      </tr>
+    `)
+  );
   document.querySelector('#sitemap-fetch-log').innerHTML = table(
     ['Sitemap', 'Status', 'URLs', 'Skipped', 'Category', 'Locale', 'Scaled', 'Last Success', 'Error'],
     sitemaps.map((sitemap) => `
@@ -553,9 +572,11 @@ async function loadSettings() {
     document.querySelector('#gsc-sites').innerHTML = '';
   }
 
+  const manualSearch = document.querySelector('#manual-overrides-search')?.value?.toLowerCase() ?? '';
+  const manualRows = urls.filter((url) => !manualSearch || url.normalizedUrl.toLowerCase().includes(manualSearch));
   document.querySelector('#manual-overrides').innerHTML = table(
     ['URL', 'Tier', 'Active', 'Manual', 'Action'],
-    urls.map((url) => `
+    manualRows.map((url) => `
       <tr>
         <td><code>${url.normalizedUrl}</code></td>
         <td>${pill(url.currentPriorityTier)}</td>
@@ -772,6 +793,27 @@ document.querySelector('#save-sources').addEventListener('click', async () => {
   await refresh();
 });
 
+document.querySelector('#delete-selected-sources').addEventListener('click', async () => {
+  const selected = [...document.querySelectorAll('[data-source-url]:checked')];
+  if (!selected.length) {
+    setStatus('Select at least one sitemap source to delete.');
+    return;
+  }
+  const ok = window.confirm(`Delete ${selected.length} sitemap source(s)? This removes the source, not already imported page URLs.`);
+  if (!ok) return;
+  const payload = {
+    sitemapIndexUrls: selected.filter((item) => item.dataset.sourceType === 'sitemapIndexUrls').map((item) => item.dataset.sourceUrl),
+    childSitemapUrls: selected.filter((item) => item.dataset.sourceType === 'childSitemapUrls').map((item) => item.dataset.sourceUrl)
+  };
+  setStatus('Deleting sitemap sources...');
+  const result = await api('/api/settings/sources/delete', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+  await refresh();
+  setStatus(`Deleted ${result.deleted.sitemapIndexUrls + result.deleted.childSitemapUrls} sitemap source(s).`);
+});
+
 document.querySelector('#fetch-sitemaps').addEventListener('click', async () => {
   setStatus('Fetching sitemap URLs...');
   const result = await api('/api/actions/fetch-sitemaps', { method: 'POST', body: '{}' });
@@ -828,22 +870,73 @@ document.querySelector('#add-manual-url').addEventListener('click', async () => 
   await refresh();
 });
 
-document.querySelector('#import-csv').addEventListener('click', async () => {
+document.querySelector('#csv-import-file').addEventListener('change', async (event) => {
+  const file = event.target.files?.[0];
+  if (!file) return;
+  document.querySelector('#csv-import-text').value = await file.text();
+  document.querySelector('#csv-import-result').value = `Loaded ${file.name}`;
+  state.pendingCsvImport = null;
+  document.querySelector('#import-csv').disabled = true;
+  document.querySelector('#cancel-csv-import').disabled = true;
+});
+
+document.querySelector('#preview-csv').addEventListener('click', async () => {
   const importType = document.querySelector('#csv-import-type').value;
   const csvText = document.querySelector('#csv-import-text').value;
   if (!csvText.trim()) {
-    setStatus('Paste CSV data before importing.');
+    setStatus('Choose a CSV file or paste CSV data before previewing.');
+    return;
+  }
+  setStatus('Previewing CSV...');
+  const preview = await api('/api/settings/csv-preview', {
+    method: 'POST',
+    body: JSON.stringify({ importType, csvText })
+  });
+  state.pendingCsvImport = { importType, csvText };
+  document.querySelector('#import-csv').disabled = false;
+  document.querySelector('#cancel-csv-import').disabled = false;
+  document.querySelector('#csv-import-result').value = `${preview.rowCount} rows ready`;
+  document.querySelector('#csv-preview').innerHTML = `
+    <strong>Preview:</strong> ${preview.rowCount} row(s), columns: ${preview.headers.map(esc).join(', ') || 'none'}<br>
+    ${preview.warnings.length ? `<strong>Warnings:</strong> ${preview.warnings.map(esc).join(' | ')}<br>` : ''}
+    <strong>Sample:</strong>
+    <div class="source-list">${preview.sampleRows.map((row) => `<code>${esc(row)}</code>`).join('') || 'none'}</div>
+  `;
+  setStatus('Preview ready. Apply Import to write changes, or Cancel.');
+});
+
+document.querySelector('#cancel-csv-import').addEventListener('click', () => {
+  state.pendingCsvImport = null;
+  document.querySelector('#import-csv').disabled = true;
+  document.querySelector('#cancel-csv-import').disabled = true;
+  document.querySelector('#csv-import-result').value = 'Import cancelled';
+  document.querySelector('#csv-preview').innerHTML = '';
+  setStatus('CSV import cancelled. No changes were written.');
+});
+
+document.querySelector('#import-csv').addEventListener('click', async () => {
+  if (!state.pendingCsvImport) {
+    setStatus('Preview CSV before applying import.');
     return;
   }
   setStatus('Importing CSV and recalculating priorities...');
   const result = await api('/api/settings/csv-import', {
     method: 'POST',
-    body: JSON.stringify({ importType, csvText })
+    body: JSON.stringify(state.pendingCsvImport)
   });
+  state.pendingCsvImport = null;
   document.querySelector('#csv-import-text').value = '';
+  document.querySelector('#csv-import-file').value = '';
   document.querySelector('#csv-import-result').value = `${result.importedRows} rows, ${result.urlsAdded} new URLs`;
+  document.querySelector('#csv-preview').innerHTML = '';
+  document.querySelector('#import-csv').disabled = true;
+  document.querySelector('#cancel-csv-import').disabled = true;
   await refresh();
   setStatus(`Imported ${result.importedRows} ${result.importType} row(s). URL list is now ${result.urlsAfter}.`);
+});
+
+document.querySelector('#manual-overrides-search').addEventListener('input', () => {
+  if (state.view === 'settings') loadSettings().catch((error) => setStatus(error.message));
 });
 
 ['#url-search', '#tier-filter', '#scaled-filter'].forEach((selector) => {
