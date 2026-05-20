@@ -1100,6 +1100,34 @@ document.querySelector('#import-csv').addEventListener('click', async () => {
   }
 });
 
+document.querySelector('#compact-state').addEventListener('click', async () => {
+  const ok = window.confirm('Compact old history and duplicate metrics? Recent inspection logs and active alerts will stay.');
+  if (!ok) return;
+  setStatus('Compacting state...');
+  document.querySelector('#compact-state').disabled = true;
+  try {
+    const response = await api('/api/settings/maintenance/compact', {
+      method: 'POST',
+      body: JSON.stringify({})
+    });
+    const removed = response.result.removed;
+    const removedTotal = Object.values(removed).reduce((sum, value) => sum + Number(value || 0), 0);
+    document.querySelector('#maintenance-result').innerHTML = `
+      <strong>Compacted.</strong> Removed ${removedTotal} old record(s).<br>
+      ${Object.entries(removed)
+        .filter(([, value]) => Number(value) > 0)
+        .map(([key, value]) => `${esc(key)}: ${value}`)
+        .join(' · ') || 'Nothing needed pruning.'}
+    `;
+    await refresh();
+    setStatus(`Compacted state. Removed ${removedTotal} old record(s).`);
+  } catch (error) {
+    setStatus(`Compaction failed: ${error.message}`);
+  } finally {
+    document.querySelector('#compact-state').disabled = false;
+  }
+});
+
 document.querySelector('#manual-overrides-search').addEventListener('input', () => {
   if (state.view === 'settings') loadSettings().catch((error) => setStatus(error.message));
 });

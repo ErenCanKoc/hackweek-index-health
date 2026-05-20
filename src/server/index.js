@@ -406,6 +406,99 @@ function removeUrlData(store, urlIds) {
   return before - store.state.urls.length;
 }
 
+function tableCounts(store) {
+  return Object.fromEntries(Object.entries(store.state)
+    .filter(([, value]) => Array.isArray(value))
+    .map(([key, value]) => [key, value.length]));
+}
+
+function pruneLatestByKey(rows, keyFn, limit, dateFn = (row) => row.updatedAt ?? row.createdAt ?? row.inspectedAt ?? 0) {
+  const groups = new Map();
+  for (const row of rows) {
+    const key = keyFn(row);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(row);
+  }
+  return [...groups.values()].flatMap((group) => group
+    .slice()
+    .sort((a, b) => new Date(dateFn(b) || 0) - new Date(dateFn(a) || 0))
+    .slice(0, limit));
+}
+
+function compactState(store, options = {}) {
+  const before = tableCounts(store);
+  const keep = {
+    prioritySnapshotsPerUrl: Number(options.prioritySnapshotsPerUrl ?? 3),
+    inspectionResultsPerUrl: Number(options.inspectionResultsPerUrl ?? 30),
+    transitionsPerUrl: Number(options.transitionsPerUrl ?? 20),
+    technicalChecksPerUrl: Number(options.technicalChecksPerUrl ?? 10),
+    resolvedAlertsPerUrl: Number(options.resolvedAlertsPerUrl ?? 10),
+    completedJobs: Number(options.completedJobs ?? 2000),
+    deletedUrls: Number(options.deletedUrls ?? 5000)
+  };
+
+  store.state.prioritySnapshots = pruneLatestByKey(
+    store.state.prioritySnapshots,
+    (row) => row.urlId,
+    keep.prioritySnapshotsPerUrl,
+    (row) => row.calculatedAt ?? row.createdAt
+  );
+  store.state.inspectionResults = pruneLatestByKey(
+    store.state.inspectionResults,
+    (row) => row.urlId,
+    keep.inspectionResultsPerUrl,
+    (row) => row.inspectedAt ?? row.createdAt
+  );
+  store.state.stateTransitions = pruneLatestByKey(
+    store.state.stateTransitions,
+    (row) => row.urlId,
+    keep.transitionsPerUrl,
+    (row) => row.createdAt
+  );
+  store.state.technicalChecks = pruneLatestByKey(
+    store.state.technicalChecks,
+    (row) => row.urlId,
+    keep.technicalChecksPerUrl,
+    (row) => row.checkedAt ?? row.createdAt
+  );
+
+  const activeAlerts = store.state.alerts.filter((alert) => alert.status === 'active');
+  const resolvedAlerts = pruneLatestByKey(
+    store.state.alerts.filter((alert) => alert.status !== 'active'),
+    (row) => row.urlId,
+    keep.resolvedAlertsPerUrl,
+    (row) => row.resolvedAt ?? row.updatedAt ?? row.createdAt
+  );
+  store.state.alerts = [...activeAlerts, ...resolvedAlerts];
+
+  const activeJobs = store.state.inspectionJobs.filter((job) => job.status !== 'completed');
+  const completedJobs = store.state.inspectionJobs
+    .filter((job) => job.status === 'completed')
+    .slice()
+    .sort((a, b) => new Date(b.updatedAt ?? b.createdAt ?? 0) - new Date(a.updatedAt ?? a.createdAt ?? 0))
+    .slice(0, keep.completedJobs);
+  store.state.inspectionJobs = [...activeJobs, ...completedJobs];
+
+  const gscByKey = new Map();
+  for (const metric of store.state.gscPerformanceMetrics) {
+    const key = `${metric.urlId}:${metric.sourceProperty ?? ''}`;
+    const previous = gscByKey.get(key);
+    if (!previous || new Date(metric.importedAt ?? metric.createdAt ?? 0) > new Date(previous.importedAt ?? previous.createdAt ?? 0)) {
+      gscByKey.set(key, metric);
+    }
+  }
+  store.state.gscPerformanceMetrics = [...gscByKey.values()];
+
+  store.state.deletedUrls = (store.state.deletedUrls ?? [])
+    .slice()
+    .sort((a, b) => new Date(b.deletedAt ?? b.updatedAt ?? 0) - new Date(a.deletedAt ?? a.updatedAt ?? 0))
+    .slice(0, keep.deletedUrls);
+
+  const after = tableCounts(store);
+  const removed = Object.fromEntries(Object.keys(before).map((key) => [key, before[key] - (after[key] ?? 0)]));
+  return { before, after, removed, keep };
+}
+
 function restoreDeletedUrl(store, url) {
   const normalized = normalizeUrl(url);
   store.state.deletedUrls = (store.state.deletedUrls ?? []).filter((row) => row.normalizedUrl !== normalized);
@@ -872,6 +965,14 @@ const server = http.createServer(async (request, response) => {
         sampleRows: lines.slice(1, 6),
         warnings
       });
+      return;
+    }
+
+    if (pathname === '/api/settings/maintenance/compact' && request.method === 'POST') {
+      const body = await readBody(request);
+      const result = compactState(context.store, body);
+      await context.store.save();
+      sendJson(response, 200, { ok: true, result });
       return;
     }
 
