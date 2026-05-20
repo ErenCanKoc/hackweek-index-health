@@ -870,6 +870,28 @@ const server = http.createServer(async (request, response) => {
       return;
     }
 
+    const propertyMatch = pathname.match(/^\/api\/properties\/(\d+)$/);
+    if (propertyMatch && request.method === 'PATCH') {
+      const property = context.store.findById('properties', Number(propertyMatch[1]));
+      if (!property) {
+        sendJson(response, 404, { error: 'Property not found' });
+        return;
+      }
+      const body = await readBody(request);
+      const allowedAuthStatuses = new Set(['ok', 'needs_auth', 'disabled']);
+      if (body.authStatus !== undefined && !allowedAuthStatuses.has(body.authStatus)) {
+        sendJson(response, 400, { error: 'authStatus must be ok, needs_auth, or disabled' });
+        return;
+      }
+      if (body.isActive !== undefined) property.isActive = Boolean(body.isActive);
+      if (body.fallbackEnabled !== undefined) property.fallbackEnabled = Boolean(body.fallbackEnabled);
+      if (body.authStatus !== undefined) property.authStatus = body.authStatus;
+      property.updatedAt = nowIso();
+      await context.store.save();
+      sendJson(response, 200, { ok: true, property });
+      return;
+    }
+
     if (pathname === '/api/alerts') {
       sendJson(response, 200, context.store.state.alerts.slice().reverse());
       return;

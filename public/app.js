@@ -381,17 +381,34 @@ async function loadScaled() {
 async function loadQuota() {
   const properties = await api('/api/properties');
   const markup = table(
-    ['Property', 'Type', 'Source', 'Daily Used', 'Daily Remaining', 'Monthly Used', 'Fallback', 'Auth', 'Last Success'],
+    ['Property', 'Active', 'Type', 'Source', 'Daily Used', 'Daily Remaining', 'Monthly Used', 'Fallback', 'Auth', 'Last Success'],
     properties.map((property) => `
       <tr>
         <td><code>${property.propertyUrl}</code></td>
+        <td>
+          <select class="inline-select tiny" data-property-field="isActive" data-property-id="${property.id}">
+            <option value="true" ${property.isActive ? 'selected' : ''}>yes</option>
+            <option value="false" ${property.isActive ? '' : 'selected'}>no</option>
+          </select>
+        </td>
         <td>${property.propertyType}</td>
         <td>${propertySource(property)}</td>
         <td>${property.dailyQuotaUsed}</td>
         <td>${property.dailyQuotaLimit - property.dailyQuotaUsed}</td>
         <td>${property.monthlyQuotaUsed}</td>
-        <td>${property.fallbackEnabled ? 'enabled' : 'disabled'}</td>
-        <td>${pill(property.authStatus)}</td>
+        <td>
+          <select class="inline-select" data-property-field="fallbackEnabled" data-property-id="${property.id}">
+            <option value="true" ${property.fallbackEnabled ? 'selected' : ''}>enabled</option>
+            <option value="false" ${property.fallbackEnabled ? '' : 'selected'}>disabled</option>
+          </select>
+        </td>
+        <td>
+          <select class="inline-select" data-property-field="authStatus" data-property-id="${property.id}">
+            <option value="ok" ${property.authStatus === 'ok' ? 'selected' : ''}>ok</option>
+            <option value="needs_auth" ${property.authStatus === 'needs_auth' ? 'selected' : ''}>needs_auth</option>
+            <option value="disabled" ${property.authStatus === 'disabled' ? 'selected' : ''}>disabled</option>
+          </select>
+        </td>
         <td>${fmtDate(property.lastSuccessfulInspectionAt)}</td>
       </tr>
     `)
@@ -602,6 +619,22 @@ document.addEventListener('click', async (event) => {
 });
 
 document.addEventListener('change', async (event) => {
+  const propertyEditable = event.target.closest('[data-property-field]');
+  if (propertyEditable) {
+    const id = propertyEditable.dataset.propertyId;
+    const field = propertyEditable.dataset.propertyField;
+    const rawValue = propertyEditable.value;
+    const payload = {};
+    if (field === 'isActive') payload.isActive = rawValue === 'true';
+    if (field === 'fallbackEnabled') payload.fallbackEnabled = rawValue === 'true';
+    if (field === 'authStatus') payload.authStatus = rawValue;
+    setStatus('Updating property...');
+    await api(`/api/properties/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
+    await refresh();
+    setStatus('Property updated.');
+    return;
+  }
+
   const editable = event.target.closest('[data-url-field]');
   if (!editable) return;
   const id = editable.dataset.urlId;
