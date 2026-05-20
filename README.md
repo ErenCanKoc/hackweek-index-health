@@ -195,22 +195,22 @@ Adcraft detection is based on the sitemap URL, not the page URL. A page URL impo
 
 ### Daily cron endpoint
 
-For free hosting that can sleep, trigger the daily work from an external scheduler such as GitHub Actions or cron-job.org:
+For free hosting that can sleep, trigger the daily work from an external scheduler. The included GitHub Actions workflow calls Render's one-off jobs API directly, so the dashboard web service does not run the heavy cron work.
 
 ```bash
 curl --request POST \
-  --header "x-cron-secret: $CRON_SECRET" \
+  --header "authorization: Bearer $RENDER_API_KEY" \
   --header "content-type: application/json" \
-  --data '{"limit":500}' \
-  https://hackweek-index-health.onrender.com/api/cron/daily
+  --data '{"startCommand":"SITEMAP_FETCH_CREATE_JOB=true SITEMAP_FETCH_REASON=external_daily DAILY_CRON_SCHEDULER_LIMIT=500 node scripts/run-sitemap-fetch-job.mjs --create"}' \
+  https://api.render.com/v1/services/$RENDER_SERVICE_ID/jobs
 ```
 
 Set these environment/secrets:
 
-- Render: `CRON_SECRET`
-- GitHub Actions repository secrets: `CRON_SECRET` and `CRON_URL=https://hackweek-index-health.onrender.com/api/cron/daily`
+- Render: `RENDER_API_KEY`, `RENDER_SERVICE_ID`, `CRON_SECRET`
+- GitHub Actions repository secrets: `RENDER_API_KEY` and `RENDER_SERVICE_ID`
 
-The included `.github/workflows/daily-cron.yml` runs every day at `03:00 UTC` and can also be run manually from GitHub Actions. The cron endpoint now creates a durable sitemap fetch job; when that job finishes, it runs the inspection scheduler with the requested limit.
+The included `.github/workflows/daily-cron.yml` runs every day at `03:00 UTC` and can also be run manually from GitHub Actions. The one-off command creates a durable sitemap fetch job; when that job finishes, it runs the inspection scheduler with the requested limit. `/api/cron/daily` is still available as a fallback HTTP endpoint.
 
 ### 3. Manual URL entry
 

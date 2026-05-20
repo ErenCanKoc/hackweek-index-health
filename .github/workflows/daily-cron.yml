@@ -6,17 +6,23 @@ on:
   workflow_dispatch:
 
 jobs:
-  daily-cron:
+  daily-render-one-off:
     runs-on: ubuntu-latest
     steps:
-      - name: Trigger daily cron endpoint
+      - name: Start Render one-off sitemap job
         run: |
+          payload=$(jq -n --arg command "$START_COMMAND" '{startCommand: $command}')
           curl --fail --show-error --silent \
             --request POST \
-            --header "x-cron-secret: $CRON_SECRET" \
+            --header "authorization: Bearer $RENDER_API_KEY" \
             --header "content-type: application/json" \
-            --data '{"limit":500}' \
-            "$CRON_URL"
+            --data "$payload" \
+            "https://api.render.com/v1/services/$RENDER_SERVICE_ID/jobs"
         env:
-          CRON_SECRET: ${{ secrets.CRON_SECRET }}
-          CRON_URL: ${{ secrets.CRON_URL }}
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
+          START_COMMAND: >-
+            SITEMAP_FETCH_CREATE_JOB=true
+            SITEMAP_FETCH_REASON=github_actions_daily
+            DAILY_CRON_SCHEDULER_LIMIT=500
+            node scripts/run-sitemap-fetch-job.mjs --create
