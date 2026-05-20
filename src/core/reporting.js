@@ -132,6 +132,18 @@ export function urlDetail(store, id) {
 export function scaledDashboard(store) {
   const scaled = store.state.urls.filter((url) => url.isScaledContent && !url.isManuallyExcluded);
   const today = dateKey();
+  const daysToIndex = scaled
+    .filter((url) => url.firstSeenAt && url.firstIndexedAt)
+    .map((url) => Math.max(0, daysBetween(url.firstSeenAt, new Date(url.firstIndexedAt))));
+  const sortedDaysToIndex = daysToIndex.slice().sort((a, b) => a - b);
+  const percentile = (percent) => {
+    if (!sortedDaysToIndex.length) return 0;
+    const index = Math.min(sortedDaysToIndex.length - 1, Math.ceil((percent / 100) * sortedDaysToIndex.length) - 1);
+    return sortedDaysToIndex[index];
+  };
+  const averageDaysToIndex = daysToIndex.length
+    ? Math.round((daysToIndex.reduce((sum, value) => sum + value, 0) / daysToIndex.length) * 10) / 10
+    : 0;
   const newToday = scaled.filter((url) => dateKey(url.firstSeenAt) === today).length;
   const firstInspectedWithin24h = scaled.filter((url) => {
     if (!url.lastInspectedAt) return false;
@@ -155,7 +167,12 @@ export function scaledDashboard(store) {
       firstInspectedWithin24hPercent: scaled.length ? Math.round((firstInspectedWithin24h / scaled.length) * 100) : 0,
       indexedWithin1DayPercent: scaled.length ? Math.round((indexedWithinDays(1) / scaled.length) * 100) : 0,
       indexedWithin3DaysPercent: scaled.length ? Math.round((indexedWithinDays(3) / scaled.length) * 100) : 0,
+      averageDaysToIndex,
+      medianDaysToIndex: percentile(50),
+      p90DaysToIndex: percentile(90),
       delayedIndexCount: scaled.filter((url) => ['discovered_not_indexed', 'not_indexed'].includes(url.currentIndexState)).length,
+      delayed3DaysCount: scaled.filter((url) => !url.firstIndexedAt && daysBetween(url.firstSeenAt) >= 3).length,
+      delayed7DaysCount: scaled.filter((url) => !url.firstIndexedAt && daysBetween(url.firstSeenAt) >= 7).length,
       indexLossCount: scaled.filter((url) => ['index_loss_suspected', 'index_lost_confirmed'].includes(url.currentIndexState)).length,
       stableIndexedCount: scaled.filter((url) => url.currentIndexState === 'stable_indexed').length
     }

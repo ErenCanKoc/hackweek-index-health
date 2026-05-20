@@ -477,7 +477,12 @@ async function loadScaled() {
     ['First Inspected 24h', `${data.kpis.firstInspectedWithin24hPercent}%`],
     ['Indexed 1 Day', `${data.kpis.indexedWithin1DayPercent}%`],
     ['Indexed 3 Days', `${data.kpis.indexedWithin3DaysPercent}%`],
+    ['Avg Days', data.kpis.averageDaysToIndex],
+    ['Median Days', data.kpis.medianDaysToIndex],
+    ['P90 Days', data.kpis.p90DaysToIndex],
     ['Delayed', data.kpis.delayedIndexCount],
+    ['Delayed 3d', data.kpis.delayed3DaysCount],
+    ['Delayed 7d', data.kpis.delayed7DaysCount],
     ['Index Loss', data.kpis.indexLossCount],
     ['Stable Indexed', data.kpis.stableIndexedCount]
   ]);
