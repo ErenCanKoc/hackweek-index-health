@@ -65,11 +65,19 @@ export function urlExplorer(store, filters = {}) {
 export function urlDetail(store, id) {
   const url = store.findById('urls', id);
   if (!url) return null;
+  const inspections = store.state.inspectionResults
+    .filter((result) => result.urlId === url.id)
+    .slice(-20)
+    .reverse()
+    .map((result) => ({
+      ...result,
+      property: store.findById('properties', result.propertyId) ?? null
+    }));
   return {
     url,
     sources: store.state.urlSources.filter((source) => source.urlId === url.id),
     prioritySnapshots: store.state.prioritySnapshots.filter((snapshot) => snapshot.urlId === url.id).slice(-10).reverse(),
-    inspections: store.state.inspectionResults.filter((result) => result.urlId === url.id).slice(-20).reverse(),
+    inspections,
     transitions: store.state.stateTransitions.filter((transition) => transition.urlId === url.id).slice(-20).reverse(),
     technicalChecks: store.state.technicalChecks.filter((check) => check.urlId === url.id).slice(-10).reverse(),
     alerts: store.state.alerts.filter((alert) => alert.urlId === url.id).slice(-20).reverse(),

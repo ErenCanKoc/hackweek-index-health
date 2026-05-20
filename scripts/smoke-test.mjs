@@ -4,7 +4,7 @@ import { loadConfig } from '../src/core/config.js';
 import { ingestAllConfiguredSources, ingestBusinessWideCsvText, ingestGscCsvText } from '../src/core/ingestion.js';
 import { ensureProperties, resolveEligibleProperties } from '../src/core/propertyResolver.js';
 import { recalculatePriorities } from '../src/core/priority.js';
-import { sitemapFetchLog } from '../src/core/reporting.js';
+import { sitemapFetchLog, urlDetail } from '../src/core/reporting.js';
 import { runScheduler } from '../src/core/scheduler.js';
 import { expandSitemapSources } from '../src/core/sitemap.js';
 import { Store } from '../src/core/store.js';
@@ -68,6 +68,8 @@ assert.equal(store.state.inspectionResults.length, summary.inspected);
 const sitemapLog = sitemapFetchLog(store);
 assert.equal(sitemapLog.length > 0, true);
 assert.equal(sitemapLog.some((row) => row.urlCount > 0), true);
+const detail = urlDetail(store, store.state.urls[0].id);
+assert.ok(detail.inspections[0].property?.propertyUrl, 'expected URL detail inspections to include property metadata');
 
 const duplicateSummary = await runScheduler(store, config, { limit: 50 });
 assert.equal(duplicateSummary.inspected, 0);

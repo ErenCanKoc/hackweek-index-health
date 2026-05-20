@@ -267,7 +267,7 @@ function detailRow(detail) {
                 <tr>
                   <td>${fmtDate(item.inspectedAt)}</td>
                   <td>${item.coverageState}</td>
-                  <td>${item.propertyId}</td>
+                  <td><code>${esc(item.property?.propertyUrl ?? item.propertyId ?? '-')}</code></td>
                 </tr>
               `))}
               <details>
