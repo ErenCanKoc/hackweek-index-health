@@ -723,17 +723,24 @@ async function createAppContext() {
 
 let context = null;
 let contextError = null;
-const contextReady = createAppContext()
-  .then(async (loadedContext) => {
-    context = loadedContext;
-    await context.store.save();
-    return context;
-  })
-  .catch((error) => {
-    contextError = error;
-    console.error('Failed to initialize app context:', error);
-    return null;
-  });
+let contextReady = null;
+
+function ensureContextReady() {
+  if (!contextReady) {
+    contextReady = createAppContext()
+      .then(async (loadedContext) => {
+        context = loadedContext;
+        await context.store.save();
+        return context;
+      })
+      .catch((error) => {
+        contextError = error;
+        console.error('Failed to initialize app context:', error);
+        return null;
+      });
+  }
+  return contextReady;
+}
 
 const cronState = {
   dailySitemapFetchEnabled: process.env.DAILY_SITEMAP_FETCH_ENABLED !== 'false',
@@ -748,7 +755,7 @@ async function runDailySitemapFetchCron(reason = 'daily_cron') {
   cronState.running = true;
   cronState.lastRunAt = nowIso();
   try {
-    await contextReady;
+    await ensureContextReady();
     if (!context) throw contextError ?? new Error('App context is not ready.');
     const cleanedBefore = removeSitemapUrlRecords(context.store);
     const counts = await ingestConfiguredSitemaps(context.store, context.config, context.resolvePath, {
@@ -806,7 +813,7 @@ const server = http.createServer(async (request, response) => {
         sendJson(response, 401, { error: 'Invalid or missing cron secret' });
         return;
       }
-      await contextReady;
+      await ensureContextReady();
       if (!context) {
         sendJson(response, 503, { error: contextError?.message ?? 'App context is not ready.' });
         return;
@@ -865,7 +872,7 @@ const server = http.createServer(async (request, response) => {
       return;
     }
 
-    await contextReady;
+    await ensureContextReady();
     if (!context) {
       sendJson(response, 503, { error: contextError?.message ?? 'App context is not ready.' });
       return;
