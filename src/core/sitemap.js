@@ -125,7 +125,8 @@ export async function expandSitemapSources(sources, resolvePath, options = {}) {
   const expandedChildren = await Promise.all((sources.childSitemapUrls ?? []).map((childSitemapUrl) => expandSource(childSitemapUrl)));
   sitemapUrls.push(...expandedChildren.flat());
 
-  return [...new Set(sitemapUrls)];
+  const excluded = new Set(sources.excludedSitemapUrls ?? []);
+  return [...new Set(sitemapUrls)].filter((url) => !excluded.has(url));
 }
 
 export function generateDemoUrlsForSitemap(sitemapUrl) {

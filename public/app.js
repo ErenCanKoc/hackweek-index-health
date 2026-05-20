@@ -523,9 +523,10 @@ async function loadSettings() {
     `)
   );
   document.querySelector('#sitemap-fetch-log').innerHTML = table(
-    ['Sitemap', 'Status', 'URLs', 'Skipped', 'Category', 'Locale', 'Scaled', 'Last Success', 'Error'],
+    ['Select', 'Sitemap', 'Status', 'URLs', 'Skipped', 'Category', 'Locale', 'Scaled', 'Last Success', 'Error'],
     sitemaps.map((sitemap) => `
       <tr>
+        <td><input type="checkbox" data-fetched-sitemap-url="${esc(sitemap.sitemapUrl)}"></td>
         <td><code>${esc(sitemap.sitemapUrl)}</code></td>
         <td>${pill(sitemap.health)}</td>
         <td>${sitemap.urlCount}</td>
@@ -812,6 +813,24 @@ document.querySelector('#delete-selected-sources').addEventListener('click', asy
   });
   await refresh();
   setStatus(`Deleted ${result.deleted.sitemapIndexUrls + result.deleted.childSitemapUrls} sitemap source(s).`);
+});
+
+document.querySelector('#delete-selected-fetched-sitemaps').addEventListener('click', async () => {
+  const sitemapUrls = [...document.querySelectorAll('[data-fetched-sitemap-url]:checked')]
+    .map((item) => item.dataset.fetchedSitemapUrl);
+  if (!sitemapUrls.length) {
+    setStatus('Select at least one fetched sitemap to delete.');
+    return;
+  }
+  const ok = window.confirm(`Delete ${sitemapUrls.length} fetched sitemap(s) from the log and exclude them from future fetches? Imported page URLs stay in URL Explorer.`);
+  if (!ok) return;
+  setStatus('Deleting fetched sitemaps...');
+  const result = await api('/api/settings/sitemaps/delete', {
+    method: 'POST',
+    body: JSON.stringify({ sitemapUrls })
+  });
+  await refresh();
+  setStatus(`Deleted ${result.deletedSitemaps} fetched sitemap(s). Excluded ${result.excludedSitemapUrls} from future fetches.`);
 });
 
 document.querySelector('#fetch-sitemaps').addEventListener('click', async () => {

@@ -663,6 +663,37 @@ const server = http.createServer(async (request, response) => {
       return;
     }
 
+    if (pathname === '/api/settings/sitemaps/delete' && request.method === 'POST') {
+      const body = await readBody(request);
+      const sources = await readJson('config/sources.json');
+      const sitemapUrls = new Set(normalizeUrlList([body.sitemapUrls, body.sitemapUrl]));
+      const beforeSitemaps = context.store.state.sitemaps.length;
+      const beforeSources = context.store.state.urlSources.length;
+      const beforeExcluded = sources.excludedSitemapUrls?.length ?? 0;
+
+      sources.excludedSitemapUrls = [
+        ...new Set([...(sources.excludedSitemapUrls ?? []), ...sitemapUrls])
+      ];
+      sources.sitemapIndexUrls = (sources.sitemapIndexUrls ?? []).filter((url) => !sitemapUrls.has(url));
+      sources.childSitemapUrls = (sources.childSitemapUrls ?? []).filter((url) => !sitemapUrls.has(url));
+      context.store.state.sitemaps = context.store.state.sitemaps.filter((sitemap) => !sitemapUrls.has(sitemap.sitemapUrl));
+      context.store.state.urlSources = context.store.state.urlSources.filter((source) => (
+        !sitemapUrls.has(source.sourceSitemapUrl) && !sitemapUrls.has(source.sourceIdentifier)
+      ));
+
+      await writeJson('config/sources.json', sources);
+      await reloadRuntimeConfig();
+      await context.store.save();
+      sendJson(response, 200, {
+        ok: true,
+        sources,
+        deletedSitemaps: beforeSitemaps - context.store.state.sitemaps.length,
+        deletedUrlSources: beforeSources - context.store.state.urlSources.length,
+        excludedSitemapUrls: sources.excludedSitemapUrls.length - beforeExcluded
+      });
+      return;
+    }
+
     if (pathname === '/api/actions/fetch-sitemaps' && request.method === 'POST') {
       const beforeUrls = context.store.state.urls.length;
       const cleanedBefore = removeSitemapUrlRecords(context.store);

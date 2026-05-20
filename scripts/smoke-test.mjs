@@ -31,6 +31,17 @@ const childIndexSources = await expandSitemapSources(
 );
 assert.equal(childIndexSources.includes('https://www.jotform.com/sitemaps/blog/sitemap.xml'), true);
 
+const excludedChildIndexSources = await expandSitemapSources(
+  {
+    sitemapIndexUrls: [],
+    childSitemapUrls: ['data/imports/sample-sitemap-index.xml'],
+    excludedSitemapUrls: ['https://www.jotform.com/sitemaps/blog/sitemap.xml']
+  },
+  (relativePath) => path.join(process.cwd(), relativePath),
+  { includeLocal: false }
+);
+assert.equal(excludedChildIndexSources.includes('https://www.jotform.com/sitemaps/blog/sitemap.xml'), false);
+
 const gscImportRows = ingestGscCsvText(
   store,
   'url,click,impression,avg_position\nhttps://www.jotform.com/dashboard-csv-test/,25,400,7.2',
