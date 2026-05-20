@@ -631,6 +631,9 @@ async function loadSettings() {
   document.querySelector('#inspection-provider').value = settings.inspection.provider ?? 'mock';
   document.querySelector('#inspection-language').value = settings.inspection.languageCode ?? 'en-US';
   document.querySelector('#fetch-child-sitemaps').checked = Boolean(settings.sources.fetchChildSitemaps);
+  document.querySelector('#ai-classification-status').innerHTML = settings.openAI?.hasKey
+    ? `OpenAI classifier ready. Model: <code>${esc(settings.openAI.model)}</code>`
+    : 'OpenAI classifier is disabled. Add OPENAI_API_KEY to enable AI category/priority suggestions.';
   document.querySelector('#import-history').innerHTML = table(
     ['Import', 'Type', 'Rows', 'New URLs', 'Status', 'Created', 'Action'],
     (settings.importBatches ?? []).map((batch) => `
@@ -1201,6 +1204,26 @@ document.querySelector('#compact-state').addEventListener('click', async () => {
     setStatus(`Compaction failed: ${error.message}`);
   } finally {
     document.querySelector('#compact-state').disabled = false;
+  }
+});
+
+document.querySelector('#classify-unknown-urls').addEventListener('click', async () => {
+  setStatus('Classifying unknown URLs...');
+  document.querySelector('#classify-unknown-urls').disabled = true;
+  try {
+    const result = await api('/api/actions/classify-urls', {
+      method: 'POST',
+      body: JSON.stringify({ limit: 20 })
+    });
+    document.querySelector('#ai-classification-result').innerHTML = result.configured
+      ? `Classified ${result.candidates} candidate(s), applied ${result.applied}.`
+      : `Classifier is not configured. Add <code>OPENAI_API_KEY</code> to Render env.`;
+    await refresh();
+    setStatus(result.configured ? `AI classification applied to ${result.applied} URL(s).` : 'OpenAI key missing.');
+  } catch (error) {
+    setStatus(`AI classification failed: ${error.message}`);
+  } finally {
+    document.querySelector('#classify-unknown-urls').disabled = false;
   }
 });
 

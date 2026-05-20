@@ -545,6 +545,96 @@ function rollbackImportBatch(store, batchId) {
   return { batch, deletedUrls, restoredMetrics };
 }
 
+function openAiStatus() {
+  return {
+    hasKey: Boolean(process.env.OPENAI_API_KEY),
+    model: process.env.OPENAI_CLASSIFIER_MODEL || 'gpt-4.1-mini'
+  };
+}
+
+function urlsForAiClassification(store, limit = 20) {
+  return store.state.urls
+    .filter((url) => !url.manualPriorityTier && !url.isManuallyExcluded)
+    .filter((url) => ['pages', 'unknown', null, undefined].includes(url.category) || url.currentPriorityTier === 'P3')
+    .slice(0, Math.max(1, Math.min(Number(limit) || 20, 50)))
+    .map((url) => ({
+      id: url.id,
+      normalizedUrl: url.normalizedUrl,
+      category: url.category,
+      locale: url.locale,
+      priorityTier: url.currentPriorityTier,
+      isScaledContent: url.isScaledContent,
+      sources: context.store.state.urlSources
+        .filter((source) => source.urlId === url.id)
+        .map((source) => source.sourceSitemapUrl || source.sourceIdentifier)
+        .filter(Boolean)
+        .slice(0, 3)
+    }));
+}
+
+async function classifyUrlsWithOpenAI(urls) {
+  const status = openAiStatus();
+  if (!status.hasKey) return { configured: false, model: status.model, classifications: [] };
+  const schema = {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      classifications: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            id: { type: 'number' },
+            category: { type: 'string' },
+            priorityTier: { type: 'string', enum: ['P0', 'P1', 'P2', 'P3'] },
+            locale: { type: ['string', 'null'] },
+            isScaledContent: { type: 'boolean' },
+            scaledContentType: { type: ['string', 'null'] },
+            confidence: { type: 'number' },
+            reason: { type: 'string' }
+          },
+          required: ['id', 'category', 'priorityTier', 'locale', 'isScaledContent', 'scaledContentType', 'confidence', 'reason']
+        }
+      }
+    },
+    required: ['classifications']
+  };
+  const response = await fetch('https://api.openai.com/v1/responses', {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: status.model,
+      input: [
+        {
+          role: 'system',
+          content: 'Classify SEO monitoring URLs. Prefer deterministic path/source evidence. Do not invent metrics. Return concise reasons.'
+        },
+        {
+          role: 'user',
+          content: JSON.stringify({ urls })
+        }
+      ],
+      text: {
+        format: {
+          type: 'json_schema',
+          name: 'url_classification_batch',
+          schema,
+          strict: true
+        }
+      }
+    })
+  });
+  const json = await response.json();
+  if (!response.ok) throw new Error(json.error?.message ?? 'OpenAI classification failed');
+  const text = json.output_text
+    ?? json.output?.flatMap((item) => item.content ?? []).find((item) => item.text)?.text;
+  return { configured: true, model: status.model, ...JSON.parse(text) };
+}
+
 function restoreDeletedUrl(store, url) {
   const normalized = normalizeUrl(url);
   store.state.deletedUrls = (store.state.deletedUrls ?? []).filter((row) => row.normalizedUrl !== normalized);
@@ -788,6 +878,7 @@ const server = http.createServer(async (request, response) => {
         propertyMappings: context.config.propertyMappings,
         cron: cronState,
         importBatches: (context.store.state.importBatches ?? []).slice().reverse().slice(0, 20),
+        openAI: openAiStatus(),
         googleAuth: await googleAuthStatus(),
         oauthRedirectUri: `${publicOrigin(parsed.origin)}/auth/google/callback`
       });
@@ -1349,6 +1440,36 @@ const server = http.createServer(async (request, response) => {
       });
       await context.store.save();
       sendJson(response, 200, { ok: true, summary });
+      return;
+    }
+
+    if (pathname === '/api/actions/classify-urls' && request.method === 'POST') {
+      const body = await readBody(request);
+      const candidates = urlsForAiClassification(context.store, body.limit ?? 20);
+      const result = await classifyUrlsWithOpenAI(candidates);
+      let applied = 0;
+      if (result.configured) {
+        for (const classification of result.classifications ?? []) {
+          if (Number(classification.confidence) < 0.5) continue;
+          const url = context.store.findById('urls', classification.id);
+          if (!url || url.manualPriorityTier) continue;
+          url.category = classification.category || url.category;
+          url.locale = classification.locale ?? url.locale;
+          url.isScaledContent = Boolean(classification.isScaledContent);
+          url.scaledContentType = classification.scaledContentType ?? url.scaledContentType;
+          url.currentPriorityTier = classification.priorityTier || url.currentPriorityTier;
+          url.aiClassification = {
+            confidence: classification.confidence,
+            reason: classification.reason,
+            model: result.model,
+            classifiedAt: nowIso()
+          };
+          url.updatedAt = nowIso();
+          applied += 1;
+        }
+        await context.store.save();
+      }
+      sendJson(response, 200, { ok: true, candidates: candidates.length, applied, ...result });
       return;
     }
 
