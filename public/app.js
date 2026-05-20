@@ -169,7 +169,7 @@ function tierOptions(selected) {
 }
 
 async function loadOverview() {
-  const [data, jobs] = await Promise.all([api('/api/overview'), api('/api/jobs')]);
+  const [data, jobs, diagnostics] = await Promise.all([api('/api/overview'), api('/api/jobs'), api('/api/job-diagnostics')]);
   document.querySelector('#kpi-grid').innerHTML = kpis([
     ['Inspected Today', data.inspectedToday],
     ['Quota Used Today', data.quotaUsedToday],
@@ -205,6 +205,49 @@ async function loadOverview() {
       </tr>
     `)
   );
+
+  document.querySelector('#queue-diagnostics').innerHTML = [
+    ['Total Jobs', diagnostics.summary.total],
+    ['Due Pending', diagnostics.summary.duePending],
+    ['Running', diagnostics.summary.running],
+    ['Failed', diagnostics.summary.failed],
+    ['Skipped', diagnostics.summary.skipped],
+    ['Completed', diagnostics.summary.completed]
+  ].map(([label, value]) => `
+    <div class="diagnostic-tile">
+      <span>${label}</span>
+      <strong>${value}</strong>
+    </div>
+  `).join('');
+
+  const errorRows = diagnostics.byError.slice(0, 4).map((item) => `
+    <tr>
+      <td>${esc(item.name)}</td>
+      <td>${item.count}</td>
+    </tr>
+  `);
+
+  const problemRows = diagnostics.recentProblemJobs.slice(0, 8).map((job) => `
+    <tr>
+      <td><code>${esc(job.normalizedUrl)}</code></td>
+      <td>${pill(job.status)}</td>
+      <td>${esc(job.reason)}</td>
+      <td>${esc(job.lastError ?? '-')}</td>
+      <td><code>${esc(job.property?.propertyUrl ?? '-')}</code></td>
+      <td>${fmtDate(job.updatedAt)}</td>
+    </tr>
+  `);
+
+  document.querySelector('#queue-problem-jobs').innerHTML = `
+    <div class="diagnostics-split">
+      <div>
+        ${table(['Top Error', 'Count'], errorRows)}
+      </div>
+      <div>
+        ${table(['URL', 'Status', 'Reason', 'Last Error', 'Property', 'Updated'], problemRows)}
+      </div>
+    </div>
+  `;
 }
 
 async function loadUrls() {

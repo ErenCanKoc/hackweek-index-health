@@ -144,6 +144,48 @@ export function sitemapFetchLog(store) {
     });
 }
 
+export function jobDiagnostics(store) {
+  const now = new Date();
+  const jobs = store.state.inspectionJobs ?? [];
+  const countBy = (key) => Object.values(jobs.reduce((acc, job) => {
+    const value = job[key] ?? 'unknown';
+    acc[value] ??= { name: value, count: 0 };
+    acc[value].count += 1;
+    return acc;
+  }, {})).sort((a, b) => b.count - a.count);
+
+  const recentProblemJobs = jobs
+    .filter((job) => ['failed', 'skipped', 'pending'].includes(job.status) && (job.lastError || new Date(job.dueAt) <= now))
+    .slice()
+    .sort((a, b) => new Date(b.updatedAt ?? b.createdAt ?? 0) - new Date(a.updatedAt ?? a.createdAt ?? 0))
+    .slice(0, 20)
+    .map((job) => ({
+      ...job,
+      property: job.propertyId ? store.findById('properties', job.propertyId) : null
+    }));
+
+  return {
+    summary: {
+      total: jobs.length,
+      pending: jobs.filter((job) => job.status === 'pending').length,
+      duePending: jobs.filter((job) => job.status === 'pending' && new Date(job.dueAt) <= now).length,
+      running: jobs.filter((job) => job.status === 'running').length,
+      completed: jobs.filter((job) => job.status === 'completed').length,
+      skipped: jobs.filter((job) => job.status === 'skipped').length,
+      failed: jobs.filter((job) => job.status === 'failed').length
+    },
+    byStatus: countBy('status'),
+    byReason: countBy('reason'),
+    byError: Object.values(jobs.reduce((acc, job) => {
+      if (!job.lastError) return acc;
+      acc[job.lastError] ??= { name: job.lastError, count: 0 };
+      acc[job.lastError].count += 1;
+      return acc;
+    }, {})).sort((a, b) => b.count - a.count),
+    recentProblemJobs
+  };
+}
+
 export function exportHealthReport(store) {
   const lines = [
     'url,priority_tier,index_state,health_state,category,locale,is_scaled_content,last_inspected_at,next_inspection_due_at,active_alerts'

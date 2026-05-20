@@ -21,7 +21,16 @@ import {
 } from '../core/googleAuth.js';
 import { ensureProperties } from '../core/propertyResolver.js';
 import { recalculatePriorities } from '../core/priority.js';
-import { exportHealthReport, overview, roadmap, scaledDashboard, sitemapFetchLog, urlDetail, urlExplorer } from '../core/reporting.js';
+import {
+  exportHealthReport,
+  jobDiagnostics,
+  overview,
+  roadmap,
+  scaledDashboard,
+  sitemapFetchLog,
+  urlDetail,
+  urlExplorer
+} from '../core/reporting.js';
 import { runScheduler } from '../core/scheduler.js';
 import { calculateNextDueAt } from '../core/stateMachine.js';
 import { isSitemapLikeUrl } from '../core/sitemap.js';
@@ -878,6 +887,11 @@ const server = http.createServer(async (request, response) => {
 
     if (pathname === '/api/jobs') {
       sendJson(response, 200, context.store.state.inspectionJobs.slice().reverse().slice(0, 200));
+      return;
+    }
+
+    if (pathname === '/api/job-diagnostics') {
+      sendJson(response, 200, jobDiagnostics(context.store));
       return;
     }
 

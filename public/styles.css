@@ -298,6 +298,10 @@ details .button.secondary:hover {
   gap: 16px;
 }
 
+.overview-band {
+  margin-top: 16px;
+}
+
 .panel,
 .table-wrap,
 .detail-drawer {
@@ -463,6 +467,40 @@ details .button.secondary:hover {
   display: grid;
   gap: 10px;
   padding: 12px;
+}
+
+.diagnostics-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(120px, 1fr));
+  gap: 10px;
+  padding: 12px;
+}
+
+.diagnostic-tile {
+  padding: 12px;
+  border: 1px solid rgba(12, 21, 81, 0.1);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.diagnostic-tile span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+
+.diagnostic-tile strong {
+  color: var(--base);
+  font-size: 22px;
+  font-weight: 400;
+}
+
+.diagnostics-split {
+  display: grid;
+  grid-template-columns: minmax(240px, 0.45fr) minmax(420px, 1fr);
+  gap: 12px;
+  padding: 0 12px 12px;
 }
 
 .roadmap-card {
@@ -821,6 +859,8 @@ pre {
 
   .kpi-grid,
   .kpi-grid.compact,
+  .diagnostics-grid,
+  .diagnostics-split,
   .split,
   .settings-grid,
   .detail-body {
