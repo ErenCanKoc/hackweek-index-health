@@ -267,6 +267,27 @@ async function readAppStateArray(key, { limit = null, reverse = false } = {}) {
   return result.rows.map((row) => row.elem);
 }
 
+async function readAppStateArrayByNumber(key, field, value, { limit = null, reverse = false } = {}) {
+  const pool = getLitePool();
+  if (!pool) return null;
+  const appStateKey = process.env.APP_STATE_KEY || 'default';
+  const limitSql = limit ? 'LIMIT $5' : '';
+  const params = limit ? [appStateKey, key, field, Number(value), Number(limit)] : [appStateKey, key, field, Number(value)];
+  const result = await pool.query(
+    `
+      SELECT elem
+      FROM app_state,
+        jsonb_array_elements(COALESCE(state -> $2, '[]'::jsonb)) WITH ORDINALITY AS rows(elem, ord)
+      WHERE id = $1
+        AND (elem ->> $3)::numeric = $4
+      ORDER BY ord ${reverse ? 'DESC' : 'ASC'}
+      ${limitSql}
+    `,
+    params
+  );
+  return result.rows.map((row) => row.elem);
+}
+
 async function readAppStateMeta() {
   const pool = getLitePool();
   if (!pool) return null;
@@ -284,6 +305,41 @@ async function readAppStateMeta() {
     [appStateKey]
   );
   return result.rows[0] ?? null;
+}
+
+function liteScaledDashboardFromArrays(urls, alerts) {
+  const tabLimit = 200;
+  const scaled = urls.filter((url) => url.isScaledContent && !url.isManuallyExcluded);
+  const indexedWithinDays = (days) => scaled.filter((url) => (
+    url.firstIndexedAt && (new Date(url.firstIndexedAt) - new Date(url.firstSeenAt)) <= days * 86400000
+  )).length;
+
+  return {
+    tabs: {
+      adcraft: scaled.filter((url) => url.scaledContentType === 'adcraft').slice(0, tabLimit),
+      delayedIndexing: scaled.filter((url) => ['discovered_not_indexed', 'not_indexed'].includes(url.currentIndexState)).slice(0, tabLimit),
+      indexLost: scaled.filter((url) => ['index_loss_suspected', 'index_lost_confirmed'].includes(url.currentIndexState)).slice(0, tabLimit),
+      stableIndexed: scaled.filter((url) => url.currentIndexState === 'stable_indexed').slice(0, tabLimit),
+      recovered: alerts.filter((alert) => alert.alertType === 'recovered').slice(-tabLimit).reverse()
+    },
+    kpis: {
+      newScaledUrlsToday: scaled.filter((url) => dateKey(url.firstSeenAt) === dateKey()).length,
+      firstInspectedWithin24hPercent: scaled.length
+        ? Math.round((scaled.filter((url) => url.lastInspectedAt && (new Date(url.lastInspectedAt) - new Date(url.firstSeenAt)) <= 86400000).length / scaled.length) * 100)
+        : 0,
+      indexedWithin1DayPercent: scaled.length ? Math.round((indexedWithinDays(1) / scaled.length) * 100) : 0,
+      indexedWithin3DaysPercent: scaled.length ? Math.round((indexedWithinDays(3) / scaled.length) * 100) : 0,
+      averageDaysToIndex: 0,
+      medianDaysToIndex: 0,
+      p90DaysToIndex: 0,
+      delayedIndexCount: scaled.filter((url) => ['discovered_not_indexed', 'not_indexed'].includes(url.currentIndexState)).length,
+      delayed3DaysCount: scaled.filter((url) => !url.firstIndexedAt && daysBetween(url.firstSeenAt) >= 3).length,
+      delayed7DaysCount: scaled.filter((url) => !url.firstIndexedAt && daysBetween(url.firstSeenAt) >= 7).length,
+      indexLossCount: scaled.filter((url) => ['index_loss_suspected', 'index_lost_confirmed'].includes(url.currentIndexState)).length,
+      stableIndexedCount: scaled.filter((url) => url.currentIndexState === 'stable_indexed').length
+    },
+    lite: true
+  };
 }
 
 function liteOverviewFromArrays({ urls, inspectionResults, properties, alerts }) {
@@ -323,7 +379,7 @@ function liteOverviewFromArrays({ urls, inspectionResults, properties, alerts })
   };
 }
 
-async function handleLiteApi(pathname, parsed, response) {
+async function handleLiteApi(pathname, parsed, request, response) {
   if (!process.env.DATABASE_URL) return false;
 
   if (pathname === '/api/health/state') {
@@ -364,6 +420,41 @@ async function handleLiteApi(pathname, parsed, response) {
       limit,
       offset,
       hasMore: offset + limit < filtered.length,
+      lite: true
+    });
+    return true;
+  }
+
+  const detailMatch = pathname.match(/^\/api\/urls\/(\d+)$/);
+  if (detailMatch && request.method === 'GET') {
+    const id = Number(detailMatch[1]);
+    const [urls, sources, inspections, jobs, technicalChecks, alerts, healthStatuses, properties] = await Promise.all([
+      readAppStateArrayByNumber('urls', 'id', id, { limit: 1 }),
+      readAppStateArrayByNumber('urlSources', 'urlId', id, { limit: 20, reverse: true }),
+      readAppStateArrayByNumber('inspectionResults', 'urlId', id, { limit: 20, reverse: true }),
+      readAppStateArrayByNumber('inspectionJobs', 'urlId', id, { limit: 20, reverse: true }),
+      readAppStateArrayByNumber('technicalChecks', 'urlId', id, { limit: 10, reverse: true }),
+      readAppStateArrayByNumber('alerts', 'urlId', id, { limit: 20, reverse: true }),
+      readAppStateArrayByNumber('healthStatuses', 'urlId', id, { limit: 1 }),
+      readAppStateArray('properties')
+    ]);
+    const propertyById = new Map((properties ?? []).map((property) => [Number(property.id), property]));
+    const url = urls?.[0] ?? null;
+    if (!url) {
+      sendJson(response, 404, { error: 'URL not found' });
+      return true;
+    }
+    sendJson(response, 200, {
+      url,
+      sources: sources ?? [],
+      prioritySnapshots: [],
+      inspections: (inspections ?? []).map((item) => ({ ...item, property: propertyById.get(Number(item.propertyId)) ?? null })),
+      transitions: [],
+      jobs: (jobs ?? []).map((job) => ({ ...job, property: propertyById.get(Number(job.propertyId)) ?? null })),
+      technicalChecks: technicalChecks ?? [],
+      alerts: alerts ?? [],
+      health: healthStatuses?.[0] ?? null,
+      propertyResolution: { selectedPropertyUrl: 'lite mode', candidates: [] },
       lite: true
     });
     return true;
@@ -431,6 +522,47 @@ async function handleLiteApi(pathname, parsed, response) {
       openAI: openAiStatus(),
       googleAuth: await googleAuthStatus(),
       oauthRedirectUri: `${publicOrigin(parsed.origin)}/auth/google/callback`,
+      lite: true
+    });
+    return true;
+  }
+
+  if (pathname === '/api/settings/gsc-sites') {
+    sendJson(response, 200, {
+      ok: true,
+      sites: [],
+      lite: true,
+      message: 'GSC property listing is unavailable while the full app context is loading.'
+    });
+    return true;
+  }
+
+  if (pathname === '/api/scaled') {
+    const [urls, alerts] = await Promise.all([
+      readAppStateArray('urls'),
+      readAppStateArray('alerts')
+    ]);
+    sendJson(response, 200, liteScaledDashboardFromArrays(urls, alerts));
+    return true;
+  }
+
+  if (pathname === '/api/roadmap') {
+    const meta = await readAppStateMeta();
+    sendJson(response, 200, {
+      summary: { done: 2, partial: 3, todo: 1, total: 6 },
+      nextFocus: [
+        {
+          status: 'partial',
+          title: 'Full context load',
+          metric: `${Math.round(Number(meta?.size_bytes ?? 0) / 1024 / 1024)} MB app_state`,
+          nextAction: 'Move hot dashboard reads from JSONB state to relational tables.'
+        }
+      ],
+      items: [
+        { area: 'Performance', status: 'done', title: 'Lite dashboard fallback', metric: 'enabled', nextAction: 'Keep expanding read endpoints.' },
+        { area: 'Performance', status: 'partial', title: 'JSONB state size', metric: `${meta?.size_bytes ?? 0} bytes`, nextAction: 'Compact or migrate heavy arrays.' },
+        { area: 'PoC', status: 'partial', title: 'Dashboard availability', metric: 'lite mode', nextAction: 'Use lite reads until full context is refactored.' }
+      ],
       lite: true
     });
     return true;
@@ -1183,11 +1315,18 @@ const server = http.createServer(async (request, response) => {
       sendJson(response, 200, {
         ok: true,
         ready: Boolean(context),
+        liteReady: Boolean(process.env.DATABASE_URL),
+        mode: context ? 'full' : process.env.DATABASE_URL ? 'lite_idle' : 'file_state_idle',
         loading: Boolean(contextReady && !context && !contextError),
         error: contextError?.message ?? null,
         contextLoad: contextLoadInfo,
         now: nowIso()
       });
+      return;
+    }
+
+    if (pathname === '/api/health/state') {
+      sendJson(response, 200, { ok: true, state: await readAppStateMeta(), contextLoad: contextLoadInfo });
       return;
     }
 
@@ -1311,7 +1450,7 @@ const server = http.createServer(async (request, response) => {
 
     if (!context) {
       try {
-        const handledLite = await handleLiteApi(pathname, parsed, response);
+        const handledLite = await handleLiteApi(pathname, parsed, request, response);
         if (handledLite) return;
       } catch (error) {
         console.error('Lite API fallback failed:', error);
