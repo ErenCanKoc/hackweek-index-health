@@ -98,10 +98,12 @@ RENDER_API_KEY=...
 RENDER_SERVICE_ID=srv-...
 SITEMAP_FETCH_CONCURRENCY=4
 SITEMAP_FETCH_BATCH_SIZE=50
+SITEMAP_FETCH_RECALCULATE_PRIORITIES=false
+SITEMAP_FETCH_RUN_SCHEDULER=false
 ```
 
 `ADMIN_PASSWORD` enables the built-in dashboard login. Without it, the app remains open for local development.
-`RENDER_API_KEY` and `RENDER_SERVICE_ID` let the dashboard start sitemap fetching as a Render one-off job, so large sitemap imports do not depend on the web request staying alive. The job table is created automatically in Postgres. `SITEMAP_FETCH_BATCH_SIZE` limits each run to that many sitemap files and automatically continues from the next batch on the following run; set it to `0` only when you intentionally want one job to fetch every sitemap source.
+`RENDER_API_KEY` and `RENDER_SERVICE_ID` let the dashboard start sitemap fetching as a Render one-off job, so large sitemap imports do not depend on the web request staying alive. The job table is created automatically in Postgres. `SITEMAP_FETCH_BATCH_SIZE` limits each run to that many sitemap files and automatically continues from the next batch on the following run; set it to `0` only when you intentionally want one job to fetch every sitemap source. By default, sitemap fetch jobs do not run priority recalculation or the inspection scheduler after fetching, which keeps imports from being blocked by post-fetch work. Set `SITEMAP_FETCH_RECALCULATE_PRIORITIES=true` or `SITEMAP_FETCH_RUN_SCHEDULER=true` only when you intentionally want those steps coupled to sitemap fetching.
 
 8. In Google Cloud OAuth Client, add:
 
@@ -202,7 +204,7 @@ For free hosting that can sleep, trigger the daily work from an external schedul
 curl --request POST \
   --header "authorization: Bearer $RENDER_API_KEY" \
   --header "content-type: application/json" \
-  --data '{"startCommand":"SITEMAP_FETCH_CREATE_JOB=true SITEMAP_FETCH_REASON=external_daily SITEMAP_FETCH_BATCH_SIZE=50 DAILY_CRON_SCHEDULER_LIMIT=500 node scripts/run-sitemap-fetch-job.mjs --create"}' \
+  --data '{"startCommand":"SITEMAP_FETCH_CREATE_JOB=true SITEMAP_FETCH_REASON=external_daily SITEMAP_FETCH_BATCH_SIZE=50 node scripts/run-sitemap-fetch-job.mjs --create"}' \
   https://api.render.com/v1/services/$RENDER_SERVICE_ID/jobs
 ```
 

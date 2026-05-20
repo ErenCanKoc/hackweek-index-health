@@ -2485,8 +2485,8 @@ async function runDailySitemapFetchCron(reason = 'daily_cron') {
       fetchChildSitemaps: true,
       useDemoUrlsWhenChildFetchIsOff: false,
       useDemoUrlsWhenChildFetchFails: false,
-      recalculatePriorities: true,
-      runSchedulerAfterFetch: true,
+      recalculatePriorities: process.env.SITEMAP_FETCH_RECALCULATE_PRIORITIES === 'true',
+      runSchedulerAfterFetch: process.env.SITEMAP_FETCH_RUN_SCHEDULER === 'true',
       schedulerLimit: Number(process.env.DAILY_CRON_SCHEDULER_LIMIT ?? 500),
       sitemapBatchSize: Number(process.env.SITEMAP_FETCH_BATCH_SIZE ?? 50),
       schedulerForce: false
@@ -2585,8 +2585,8 @@ const server = http.createServer(async (request, response) => {
         fetchChildSitemaps: true,
         useDemoUrlsWhenChildFetchIsOff: false,
         useDemoUrlsWhenChildFetchFails: false,
-        recalculatePriorities: true,
-        runSchedulerAfterFetch: true,
+        recalculatePriorities: process.env.SITEMAP_FETCH_RECALCULATE_PRIORITIES === 'true',
+        runSchedulerAfterFetch: process.env.SITEMAP_FETCH_RUN_SCHEDULER === 'true',
         schedulerLimit: Number(body.limit ?? parsed.searchParams.get('limit') ?? process.env.DAILY_CRON_SCHEDULER_LIMIT ?? 500),
         schedulerForce: body.force === true || parsed.searchParams.get('force') === 'true'
       }, parsed);
