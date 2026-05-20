@@ -1147,7 +1147,7 @@ document.querySelector('#save-sources').addEventListener('click', async () => {
     setStatus('Saving sources...');
     const result = await api('/api/settings/sources', {
       method: 'POST',
-      timeoutMs: 10000,
+      timeoutMs: 30000,
       body: JSON.stringify({
         sitemapIndexUrl: document.querySelector('#sitemap-index-url').value,
         sitemapIndexUrls: splitBulkUrls(document.querySelector('#bulk-sitemap-index-urls').value),

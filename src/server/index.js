@@ -257,12 +257,31 @@ function getLitePool() {
   return litePool;
 }
 
+function appStateKey() {
+  return process.env.APP_STATE_KEY || 'default';
+}
+
+async function patchAppStateJson(pathSegments, value) {
+  const pool = getLitePool();
+  if (!pool) return false;
+  const pathArray = pathSegments.map(String);
+  const result = await pool.query(
+    `
+      UPDATE app_state
+      SET state = jsonb_set(state, $2::text[], $3::jsonb, true),
+          updated_at = now()
+      WHERE id = $1
+    `,
+    [appStateKey(), pathArray, JSON.stringify(value)]
+  );
+  return result.rowCount > 0;
+}
+
 async function readAppStateArray(key, { limit = null, reverse = false } = {}) {
   const pool = getLitePool();
   if (!pool) return null;
-  const appStateKey = process.env.APP_STATE_KEY || 'default';
   const limitSql = limit ? 'LIMIT $3' : '';
-  const params = limit ? [appStateKey, key, Number(limit)] : [appStateKey, key];
+  const params = limit ? [appStateKey(), key, Number(limit)] : [appStateKey(), key];
   const result = await pool.query(
     `
       SELECT elem
@@ -1672,6 +1691,13 @@ async function loadEffectiveConfigForSettings() {
 
 async function saveRuntimeSources(sources) {
   await writeJson('config/sources.json', sources);
+  const patchedState = await patchAppStateJson(['configSources'], sources);
+  if (patchedState) {
+    if (context?.store) context.store.state.configSources = sources;
+    await reloadRuntimeConfig();
+    return sources;
+  }
+
   const store = context?.store ?? await loadStore();
   store.state.configSources = sources;
   await store.save();
