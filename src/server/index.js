@@ -1181,6 +1181,78 @@ async function handleLiteApi(pathname, parsed, request, response) {
     return true;
   }
 
+  if (pathname === '/api/settings/sources' && request.method === 'POST') {
+    const body = await readBody(request);
+    const sources = await readJson('config/sources.json');
+    sources.sitemapIndexUrls ??= [];
+    sources.childSitemapUrls ??= [];
+    const added = { sitemapIndexUrls: [], childSitemapUrls: [] };
+    const skipped = { sitemapIndexUrls: [], childSitemapUrls: [] };
+
+    const sitemapIndexUrls = normalizeUrlList([
+      body.sitemapIndexUrl,
+      body.sitemapIndexUrls,
+      body.bulkSitemapIndexUrls
+    ]);
+    const childSitemapUrls = normalizeUrlList([
+      body.childSitemapUrl,
+      body.childSitemapUrls,
+      body.bulkChildSitemapUrls
+    ]);
+
+    for (const url of sitemapIndexUrls) {
+      if (sources.sitemapIndexUrls.includes(url)) skipped.sitemapIndexUrls.push(url);
+      else {
+        sources.sitemapIndexUrls.push(url);
+        added.sitemapIndexUrls.push(url);
+      }
+    }
+
+    for (const url of childSitemapUrls) {
+      if (sources.childSitemapUrls.includes(url)) skipped.childSitemapUrls.push(url);
+      else {
+        sources.childSitemapUrls.push(url);
+        added.childSitemapUrls.push(url);
+      }
+    }
+
+    if (typeof body.fetchChildSitemaps === 'boolean') {
+      sources.fetchChildSitemaps = body.fetchChildSitemaps;
+    }
+    if (typeof body.useDemoUrlsWhenChildFetchFails === 'boolean') {
+      sources.useDemoUrlsWhenChildFetchFails = body.useDemoUrlsWhenChildFetchFails;
+    }
+    if (typeof body.useDemoUrlsWhenChildFetchIsOff === 'boolean') {
+      sources.useDemoUrlsWhenChildFetchIsOff = body.useDemoUrlsWhenChildFetchIsOff;
+    }
+
+    await writeJson('config/sources.json', sources);
+    await reloadRuntimeConfig();
+    sendJson(response, 200, { ok: true, sources, added, skipped, lite: true });
+    return true;
+  }
+
+  if (pathname === '/api/settings/sources/delete' && request.method === 'POST') {
+    const body = await readBody(request);
+    const sources = await readJson('config/sources.json');
+    const sitemapIndexUrls = new Set(normalizeUrlList([body.sitemapIndexUrls, body.sitemapIndexUrl]));
+    const childSitemapUrls = new Set(normalizeUrlList([body.childSitemapUrls, body.childSitemapUrl]));
+    const before = {
+      sitemapIndexUrls: sources.sitemapIndexUrls?.length ?? 0,
+      childSitemapUrls: sources.childSitemapUrls?.length ?? 0
+    };
+    sources.sitemapIndexUrls = (sources.sitemapIndexUrls ?? []).filter((url) => !sitemapIndexUrls.has(url));
+    sources.childSitemapUrls = (sources.childSitemapUrls ?? []).filter((url) => !childSitemapUrls.has(url));
+    const deleted = {
+      sitemapIndexUrls: before.sitemapIndexUrls - sources.sitemapIndexUrls.length,
+      childSitemapUrls: before.childSitemapUrls - sources.childSitemapUrls.length
+    };
+    await writeJson('config/sources.json', sources);
+    await reloadRuntimeConfig();
+    sendJson(response, 200, { ok: true, sources, deleted, lite: true });
+    return true;
+  }
+
   if (pathname === '/api/settings/delete-urls' && request.method === 'POST') {
     const body = await readBody(request);
     const ids = normalizeIdList([body.ids, body.id]);
@@ -1336,7 +1408,7 @@ function addManualUrlToStore(store, body) {
 }
 
 async function reloadRuntimeConfig() {
-  context.config = await loadConfig();
+  if (context) context.config = await loadConfig();
 }
 
 function inferCategoryFromPath(pathPrefix) {

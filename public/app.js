@@ -1057,25 +1057,35 @@ document.querySelector('#save-inspection-provider').addEventListener('click', as
 });
 
 document.querySelector('#save-sources').addEventListener('click', async () => {
-  setStatus('Saving sources...');
-  const result = await api('/api/settings/sources', {
-    method: 'POST',
-    body: JSON.stringify({
-      sitemapIndexUrl: document.querySelector('#sitemap-index-url').value,
-      sitemapIndexUrls: splitBulkUrls(document.querySelector('#bulk-sitemap-index-urls').value),
-      childSitemapUrl: document.querySelector('#child-sitemap-url').value,
-      childSitemapUrls: splitBulkUrls(document.querySelector('#bulk-child-sitemap-urls').value),
-      fetchChildSitemaps: document.querySelector('#fetch-child-sitemaps').checked
-    })
-  });
-  const addedCount = result.added.sitemapIndexUrls.length + result.added.childSitemapUrls.length;
-  const skippedCount = result.skipped.sitemapIndexUrls.length + result.skipped.childSitemapUrls.length;
-  document.querySelector('#sitemap-index-url').value = '';
-  document.querySelector('#child-sitemap-url').value = '';
-  document.querySelector('#bulk-sitemap-index-urls').value = '';
-  document.querySelector('#bulk-child-sitemap-urls').value = '';
-  setStatus(`Saved sources. Added ${addedCount}, skipped ${skippedCount}.`);
-  await refresh();
+  try {
+    setStatus('Saving sources...');
+    const result = await api('/api/settings/sources', {
+      method: 'POST',
+      timeoutMs: 10000,
+      body: JSON.stringify({
+        sitemapIndexUrl: document.querySelector('#sitemap-index-url').value,
+        sitemapIndexUrls: splitBulkUrls(document.querySelector('#bulk-sitemap-index-urls').value),
+        childSitemapUrl: document.querySelector('#child-sitemap-url').value,
+        childSitemapUrls: splitBulkUrls(document.querySelector('#bulk-child-sitemap-urls').value),
+        fetchChildSitemaps: document.querySelector('#fetch-child-sitemaps').checked
+      })
+    });
+    const addedCount = result.added.sitemapIndexUrls.length + result.added.childSitemapUrls.length;
+    const skippedCount = result.skipped.sitemapIndexUrls.length + result.skipped.childSitemapUrls.length;
+    document.querySelector('#sitemap-index-url').value = '';
+    document.querySelector('#child-sitemap-url').value = '';
+    document.querySelector('#bulk-sitemap-index-urls').value = '';
+    document.querySelector('#bulk-child-sitemap-urls').value = '';
+    setStatus(`Saved sources. Added ${addedCount}, skipped ${skippedCount}. Refreshing...`);
+    try {
+      await refresh();
+      setStatus(`Saved sources. Added ${addedCount}, skipped ${skippedCount}.`);
+    } catch (error) {
+      setStatus(`Saved sources, but refresh failed: ${error.message}`);
+    }
+  } catch (error) {
+    setStatus(`Saving sources failed: ${error.message}`);
+  }
 });
 
 document.querySelector('#delete-selected-sources').addEventListener('click', async () => {
