@@ -35,6 +35,15 @@ import {
 import { runScheduler } from '../core/scheduler.js';
 import { calculateNextDueAt } from '../core/stateMachine.js';
 import { isSitemapLikeUrl } from '../core/sitemap.js';
+import {
+  createSitemapFetchJob,
+  executeSitemapFetchJob,
+  getSitemapFetchJob,
+  hasActiveSitemapFetchJob,
+  latestSitemapFetchJob,
+  listSitemapFetchJobs,
+  updateSitemapFetchJob
+} from '../core/sitemapFetchJobs.js';
 import { getSearchConsoleAccessToken } from '../core/inspectionProvider.js';
 import { dateKey, daysBetween, normalizeUrl, nowIso } from '../core/utils.js';
 
@@ -1271,7 +1280,8 @@ async function handleLiteApi(pathname, parsed, request, response) {
       inspection: config.policy.inspection,
       propertyMappings: config.propertyMappings,
       cron: cronState,
-      sitemapFetch: sitemapFetchState,
+      sitemapFetch: await latestSitemapFetchState(),
+      sitemapFetchJobs: await listSitemapFetchJobs(5),
       importBatches: [],
       openAI: openAiStatus(),
       googleAuth: await googleAuthStatus(),
@@ -1407,7 +1417,10 @@ async function handleLiteApi(pathname, parsed, request, response) {
   }
 
   if (pathname === '/api/actions/fetch-sitemaps/status') {
-    sendJson(response, 200, { ok: true, sitemapFetch: sitemapFetchState, lite: true });
+    const jobId = parsed.searchParams.get('jobId');
+    const job = jobId ? await getSitemapFetchJob(jobId) : await latestSitemapFetchJob();
+    await syncContextAfterCompletedSitemapJob(job);
+    sendJson(response, 200, { ok: true, sitemapFetch: sitemapFetchStateFromJob(job), job, lite: true });
     return true;
   }
 
@@ -1418,6 +1431,8 @@ async function handleLiteApi(pathname, parsed, request, response) {
       ok: result.accepted || result.alreadyRunning,
       message: result.alreadyRunning ? 'Sitemap fetch is already running.' : 'Sitemap fetch started in the background.',
       sitemapFetch: result.state,
+      job: result.job,
+      triggerMode: result.triggerMode,
       lite: true
     });
     return true;
@@ -2177,104 +2192,111 @@ const cronState = {
   lastError: null
 };
 
-const sitemapFetchState = {
-  running: false,
-  startedAt: null,
-  finishedAt: null,
-  progress: {
-    phase: 'idle',
-    percent: 0,
-    total: 0,
-    completed: 0,
-    success: 0,
-    failed: 0,
-    importedUrls: 0,
-    currentSitemapUrl: null,
-    updatedAt: null
-  },
-  lastResult: null,
-  lastError: null
-};
-
-async function runSitemapFetchAction(body = {}, parsed = null) {
-  await ensureContextReady();
-  if (!context) throw contextError ?? new Error('App context is not ready.');
-  const beforeUrls = context.store.state.urls.length;
-  const cleanedBefore = removeSitemapUrlRecords(context.store);
-  const counts = await ingestConfiguredSitemaps(context.store, context.config, context.resolvePath, {
-    includeLocal: false,
-    fetchChildSitemaps: typeof body.fetchChildSitemaps === 'boolean'
-      ? body.fetchChildSitemaps
-      : context.config.sources.fetchChildSitemaps,
-    useDemoUrlsWhenChildFetchIsOff: typeof body.useDemoUrlsWhenChildFetchIsOff === 'boolean'
-      ? body.useDemoUrlsWhenChildFetchIsOff
-      : context.config.sources.useDemoUrlsWhenChildFetchIsOff,
-    useDemoUrlsWhenChildFetchFails: typeof body.useDemoUrlsWhenChildFetchFails === 'boolean'
-      ? body.useDemoUrlsWhenChildFetchFails
-      : context.config.sources.useDemoUrlsWhenChildFetchFails,
-    onProgress: (progress) => {
-      sitemapFetchState.progress = {
-        ...sitemapFetchState.progress,
-        ...progress
-      };
-    }
-  });
-  const cleanedAfter = removeSitemapUrlRecords(context.store);
-  const shouldRecalculatePriorities = body.recalculatePriorities === true
-    || parsed?.searchParams?.get('recalculatePriorities') === 'true';
-  const thresholds = shouldRecalculatePriorities ? recalculatePriorities(context.store) : null;
-  await context.store.save();
+function sitemapFetchStateFromJob(job) {
   return {
-    ok: true,
-    counts,
-    fetchSummary: counts.fetchSummary,
-    cleanedSitemapUrlRecords: cleanedBefore + cleanedAfter,
-    urlsBefore: beforeUrls,
-    urlsAfter: context.store.state.urls.length,
-    urlsAddedOrUpdated: counts.urlCount,
-    priorityRecalculated: shouldRecalculatePriorities,
-    progress: sitemapFetchState.progress,
-    thresholds
+    running: ['queued', 'running'].includes(job?.status),
+    startedAt: job?.startedAt ?? null,
+    finishedAt: job?.finishedAt ?? null,
+    progress: job?.progress ?? {
+      phase: 'idle',
+      percent: 0,
+      total: 0,
+      completed: 0,
+      success: 0,
+      failed: 0,
+      importedUrls: 0,
+      currentSitemapUrl: null,
+      updatedAt: null
+    },
+    lastResult: job?.status === 'completed' ? job.result : null,
+    lastError: job?.status === 'failed' ? job.error : null,
+    job: job ?? null
   };
 }
 
-async function startSitemapFetchAction(body = {}, parsed = null) {
-  if (sitemapFetchState.running) return { accepted: false, alreadyRunning: true, state: sitemapFetchState };
-  sitemapFetchState.running = true;
-  sitemapFetchState.startedAt = nowIso();
-  sitemapFetchState.finishedAt = null;
-  sitemapFetchState.progress = {
-    phase: 'queued',
-    percent: 0,
-    total: 0,
-    completed: 0,
-    success: 0,
-    failed: 0,
-    importedUrls: 0,
-    currentSitemapUrl: null,
-    updatedAt: sitemapFetchState.startedAt
+async function latestSitemapFetchState() {
+  return sitemapFetchStateFromJob(await latestSitemapFetchJob());
+}
+
+async function syncContextAfterCompletedSitemapJob(job) {
+  if (!context || job?.status !== 'completed') return;
+  try {
+    await context.store.load();
+    await refreshDashboardCache().catch((error) => console.error('Dashboard cache refresh failed after sitemap job sync:', error.message));
+  } catch (error) {
+    console.error('Failed to sync app context after sitemap job completion:', error.message);
+  }
+}
+
+function renderOneOffConfig() {
+  return {
+    apiKey: process.env.RENDER_API_KEY || process.env.RENDER_API_TOKEN || '',
+    serviceId: process.env.RENDER_SERVICE_ID || process.env.RENDER_BASE_SERVICE_ID || ''
   };
-  sitemapFetchState.lastError = null;
-  sitemapFetchState.lastResult = null;
-  runSitemapFetchAction(body, parsed)
-    .then(async (result) => {
-      sitemapFetchState.lastResult = result;
+}
+
+async function triggerRenderOneOffSitemapJob(jobId) {
+  const { apiKey, serviceId } = renderOneOffConfig();
+  if (!apiKey || !serviceId) return null;
+  const startCommand = `node scripts/run-sitemap-fetch-job.mjs ${Number(jobId)}`;
+  const response = await fetch(`https://api.render.com/v1/services/${encodeURIComponent(serviceId)}/jobs`, {
+    method: 'POST',
+    headers: {
+      accept: 'application/json',
+      authorization: `Bearer ${apiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({ startCommand })
+  });
+  const text = await response.text();
+  let payload = null;
+  try {
+    payload = text ? JSON.parse(text) : null;
+  } catch {
+    payload = { raw: text };
+  }
+  if (!response.ok) {
+    throw new Error(`Render job create failed ${response.status}: ${payload?.message ?? payload?.error ?? text}`);
+  }
+  return { ...payload, startCommand };
+}
+
+async function startSitemapFetchAction(body = {}, parsed = null) {
+  const activeJob = await hasActiveSitemapFetchJob();
+  if (activeJob) return { accepted: false, alreadyRunning: true, job: activeJob, state: sitemapFetchStateFromJob(activeJob) };
+
+  const options = {
+    fetchChildSitemaps: typeof body.fetchChildSitemaps === 'boolean' ? body.fetchChildSitemaps : undefined,
+    useDemoUrlsWhenChildFetchIsOff: typeof body.useDemoUrlsWhenChildFetchIsOff === 'boolean' ? body.useDemoUrlsWhenChildFetchIsOff : undefined,
+    useDemoUrlsWhenChildFetchFails: typeof body.useDemoUrlsWhenChildFetchFails === 'boolean' ? body.useDemoUrlsWhenChildFetchFails : undefined,
+    recalculatePriorities: body.recalculatePriorities === true || parsed?.searchParams?.get('recalculatePriorities') === 'true',
+    fetchConcurrency: Number(body.fetchConcurrency ?? parsed?.searchParams?.get('fetchConcurrency') ?? process.env.SITEMAP_FETCH_CONCURRENCY ?? 4)
+  };
+  const preferredMode = renderOneOffConfig().apiKey && renderOneOffConfig().serviceId ? 'render_one_off' : 'local';
+  let job = await createSitemapFetchJob(options, preferredMode);
+
+  if (preferredMode === 'render_one_off') {
+    try {
+      const renderJob = await triggerRenderOneOffSitemapJob(job.id);
+      job = await updateSitemapFetchJob(job.id, { renderJob, triggerMode: 'render_one_off' });
+      return { accepted: true, alreadyRunning: false, job, state: sitemapFetchStateFromJob(job), triggerMode: 'render_one_off' };
+    } catch (error) {
+      console.error('Render one-off sitemap job trigger failed, falling back to local runner:', error);
+      job = await updateSitemapFetchJob(job.id, {
+        triggerMode: 'local_fallback',
+        error: `Render one-off trigger failed; local fallback started: ${error.message}`
+      });
+    }
+  }
+
+  executeSitemapFetchJob(job.id, {
+    store: context?.store,
+    config: context?.config,
+    afterStateSave: async () => {
       await refreshDashboardCache().catch((error) => console.error('Dashboard cache refresh failed after sitemap fetch:', error.message));
-    })
-    .catch((error) => {
-      sitemapFetchState.lastError = error.message;
-      sitemapFetchState.progress = {
-        ...sitemapFetchState.progress,
-        phase: 'failed',
-        updatedAt: nowIso()
-      };
-      console.error('Sitemap fetch failed:', error);
-    })
-    .finally(() => {
-      sitemapFetchState.running = false;
-      sitemapFetchState.finishedAt = nowIso();
-    });
-  return { accepted: true, alreadyRunning: false, state: sitemapFetchState };
+    }
+  }).catch((error) => console.error('Sitemap fetch job failed:', error));
+  return { accepted: true, alreadyRunning: false, job, state: sitemapFetchStateFromJob(job), triggerMode: job.triggerMode };
 }
 
 async function runDailySitemapFetchCron(reason = 'daily_cron') {
@@ -2501,7 +2523,8 @@ const server = http.createServer(async (request, response) => {
         inspection: context.config.policy.inspection,
         propertyMappings: context.config.propertyMappings,
         cron: cronState,
-        sitemapFetch: sitemapFetchState,
+        sitemapFetch: await latestSitemapFetchState(),
+        sitemapFetchJobs: await listSitemapFetchJobs(5),
         importBatches: (context.store.state.importBatches ?? [])
           .slice()
           .reverse()
@@ -2627,7 +2650,15 @@ const server = http.createServer(async (request, response) => {
     }
 
     if (pathname === '/api/actions/fetch-sitemaps/status') {
-      sendJson(response, 200, { ok: true, sitemapFetch: sitemapFetchState });
+      const jobId = parsed.searchParams.get('jobId');
+      const job = jobId ? await getSitemapFetchJob(jobId) : await latestSitemapFetchJob();
+      await syncContextAfterCompletedSitemapJob(job);
+      sendJson(response, 200, { ok: true, sitemapFetch: sitemapFetchStateFromJob(job), job });
+      return;
+    }
+
+    if (pathname === '/api/sitemap-fetch-jobs') {
+      sendJson(response, 200, { ok: true, jobs: await listSitemapFetchJobs(Number(parsed.searchParams.get('limit') ?? 10)) });
       return;
     }
 
@@ -2637,7 +2668,9 @@ const server = http.createServer(async (request, response) => {
       sendJson(response, result.alreadyRunning ? 200 : 202, {
         ok: result.accepted || result.alreadyRunning,
         message: result.alreadyRunning ? 'Sitemap fetch is already running.' : 'Sitemap fetch started in the background.',
-        sitemapFetch: result.state
+        sitemapFetch: result.state,
+        job: result.job,
+        triggerMode: result.triggerMode
       });
       return;
     }
@@ -2667,10 +2700,12 @@ const server = http.createServer(async (request, response) => {
     }
 
     if (pathname === '/api/settings/csv-import' && request.method === 'POST') {
-      if (sitemapFetchState.running) {
+      const activeSitemapFetch = await hasActiveSitemapFetchJob();
+      if (activeSitemapFetch) {
         sendJson(response, 409, {
           error: 'Sitemap fetch is still running. Wait for it to finish before applying GSC/P30 CSV imports.',
-          sitemapFetch: sitemapFetchState
+          sitemapFetch: sitemapFetchStateFromJob(activeSitemapFetch),
+          job: activeSitemapFetch
         });
         return;
       }

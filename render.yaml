@@ -27,3 +27,9 @@ services:
         sync: false
       - key: DATABASE_URL
         sync: false
+      - key: RENDER_API_KEY
+        sync: false
+      - key: RENDER_SERVICE_ID
+        sync: false
+      - key: SITEMAP_FETCH_CONCURRENCY
+        value: 4

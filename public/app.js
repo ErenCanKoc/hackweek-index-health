@@ -120,6 +120,19 @@ function renderSitemapProgress(progress = {}) {
   `;
 }
 
+function renderSitemapJobStatus(job = {}) {
+  const result = job.result ?? {};
+  const summary = result.fetchSummary ?? result.counts?.fetchSummary ?? {};
+  const imported = result.counts?.urlCount ?? job.progress?.importedUrls ?? 0;
+  return [
+    pill(job.status ?? 'unknown'),
+    job.triggerMode ? esc(job.triggerMode.replaceAll('_', ' ')) : '',
+    summary.total ? `${summary.success ?? 0}/${summary.total} sitemaps` : '',
+    imported ? `${imported} URLs` : '',
+    job.error ? esc(job.error) : ''
+  ].filter(Boolean).join('<br>');
+}
+
 function updateSitemapProgressUi(progress) {
   const summary = document.querySelector('#source-summary');
   if (!summary || !progress) return;
@@ -736,7 +749,7 @@ async function loadSettings() {
   );
   document.querySelector('#source-summary').innerHTML = `
     ${settings.sitemapFetch?.running || settings.sitemapFetch?.lastResult ? renderSitemapProgress(settings.sitemapFetch.progress ?? settings.sitemapFetch.lastResult?.progress ?? {}) : ''}
-    <strong>How this works:</strong> These sitemap URLs are discovery sources only. The engine fetches them, extracts page URLs, and inspects page URLs only.<br>
+    <strong>How this works:</strong> Fetching now runs as a durable job. On Render, set <code>RENDER_API_KEY</code> and <code>RENDER_SERVICE_ID</code> to run it as a one-off job; otherwise it uses the same job table with a local fallback.<br>
     <strong>Daily cron:</strong> ${settings.cron?.dailySitemapFetchEnabled ? 'enabled' : 'disabled'}${settings.cron?.lastRunAt ? `, last run ${fmtDate(settings.cron.lastRunAt)}` : ''}${settings.cron?.lastError ? `, last error: ${esc(settings.cron.lastError)}` : ''}<br>
     <strong>Sitemap indexes:</strong> ${(settings.sources.sitemapIndexUrls ?? []).length}<br>
     <div class="source-list">${(settings.sources.sitemapIndexUrls ?? []).map((url) => `<code>${esc(url)}</code>`).join('') || 'none'}</div>
@@ -744,6 +757,18 @@ async function loadSettings() {
     <div class="source-list">${(settings.sources.childSitemapUrls ?? []).map((url) => `<code>${esc(url)}</code>`).join('') || 'none'}</div>
     <strong>Manual URL files:</strong> ${(settings.sources.manualUrlFiles ?? []).map(esc).join(', ') || 'none'}
   `;
+  document.querySelector('#sitemap-fetch-jobs').innerHTML = table(
+    ['Job', 'Status', 'Progress', 'Started', 'Finished'],
+    (settings.sitemapFetchJobs ?? []).map((job) => `
+      <tr>
+        <td>#${job.id}</td>
+        <td>${renderSitemapJobStatus(job)}</td>
+        <td>${esc(sitemapProgressText(job.progress ?? {}))}</td>
+        <td>${fmtDate(job.startedAt ?? job.createdAt)}</td>
+        <td>${fmtDate(job.finishedAt)}</td>
+      </tr>
+    `)
+  );
   document.querySelector('#source-management').innerHTML = table(
     ['<label class="select-all-control"><input id="select-all-sources" type="checkbox"> All</label>', 'Type', 'Source URL'],
     sourceRows(settings).map((source) => `
@@ -1185,23 +1210,24 @@ document.querySelector('#delete-selected-fetched-sitemaps').addEventListener('cl
 
 document.querySelector('#fetch-sitemaps').addEventListener('click', async () => {
   try {
-    setStatus('Starting sitemap fetch...');
+    setStatus('Creating sitemap fetch job...');
     const result = await api('/api/actions/fetch-sitemaps', { method: 'POST', timeoutMs: 10000, body: '{}' });
     if (result.sitemapFetch) {
+      const jobId = result.job?.id;
       updateSitemapProgressUi(result.sitemapFetch.progress);
-      setStatus(`${result.message ?? 'Sitemap fetch started.'} ${sitemapProgressText(result.sitemapFetch.progress)}`);
+      setStatus(`${result.message ?? 'Sitemap fetch job created.'} ${result.triggerMode ? `Mode: ${result.triggerMode}. ` : ''}${sitemapProgressText(result.sitemapFetch.progress)}`);
       for (let attempt = 0; attempt < 120; attempt += 1) {
         await new Promise((resolve) => setTimeout(resolve, 5000));
         let status;
         try {
-          status = await api('/api/actions/fetch-sitemaps/status', { timeoutMs: 10000 });
+          status = await api(`/api/actions/fetch-sitemaps/status${jobId ? `?jobId=${encodeURIComponent(jobId)}` : ''}`, { timeoutMs: 10000 });
         } catch (error) {
-          setStatus(`Sitemap fetch started, but status check failed: ${error.message}. The backend may be restarting; refresh in a minute.`);
+          setStatus(`Sitemap fetch job started, but status check failed: ${error.message}. The job state is persisted; refresh in a minute.`);
           return;
         }
         if (status.sitemapFetch?.running) {
           updateSitemapProgressUi(status.sitemapFetch.progress);
-          setStatus(`Sitemap fetch ${sitemapProgressText(status.sitemapFetch.progress)}.`);
+          setStatus(`Sitemap fetch job ${status.job?.id ? `#${status.job.id} ` : ''}${sitemapProgressText(status.sitemapFetch.progress)}.`);
           continue;
         }
         if (status.sitemapFetch?.lastError) {
@@ -1217,7 +1243,7 @@ document.querySelector('#fetch-sitemaps').addEventListener('click', async () => 
           return;
         }
       }
-      setStatus('Sitemap fetch is still running in the background. Check the sitemap log again shortly.');
+      setStatus('Sitemap fetch job is still running. Its progress is persisted in the job table; refresh again shortly.');
       return;
     }
     const summary = result.fetchSummary ?? { success: 0, failed: 0, pending: 0, total: result.counts.sitemapCount };

@@ -8,6 +8,7 @@
     "start": "node src/server/index.js",
     "seed": "node scripts/seed.mjs",
     "scheduler": "node scripts/run-scheduler.mjs",
+    "sitemap:fetch-job": "node scripts/run-sitemap-fetch-job.mjs",
     "check:supabase": "node scripts/check-supabase.mjs",
     "smoke": "node scripts/smoke-test.mjs"
   },

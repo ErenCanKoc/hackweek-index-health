@@ -21,7 +21,8 @@ const DEFAULT_STATE = {
   alerts: [],
   gscPerformanceMetrics: [],
   businessMetrics: [],
-  importBatches: []
+  importBatches: [],
+  sitemapFetchJobs: []
 };
 
 export class Store {

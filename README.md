@@ -94,9 +94,13 @@ DATABASE_URL=...
 DATABASE_SSL=true
 APP_STATE_KEY=production
 INSPECTION_PROVIDER=gsc
+RENDER_API_KEY=...
+RENDER_SERVICE_ID=srv-...
+SITEMAP_FETCH_CONCURRENCY=4
 ```
 
 `ADMIN_PASSWORD` enables the built-in dashboard login. Without it, the app remains open for local development.
+`RENDER_API_KEY` and `RENDER_SERVICE_ID` let the dashboard start sitemap fetching as a Render one-off job, so large sitemap imports do not depend on the web request staying alive. The job table is created automatically in Postgres.
 
 8. In Google Cloud OAuth Client, add:
 
