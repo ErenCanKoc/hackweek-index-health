@@ -247,11 +247,14 @@ export function jobDiagnostics(store) {
   };
 }
 
-export function exportHealthReport(store) {
+export function exportHealthReport(store, filters = {}) {
   const lines = [
     'url,priority_tier,index_state,health_state,category,locale,is_scaled_content,last_inspected_at,next_inspection_due_at,active_alerts'
   ];
-  for (const url of store.state.urls) {
+  const urls = filters && Object.keys(filters).length
+    ? urlExplorer(store, filters)
+    : store.state.urls;
+  for (const url of urls) {
     const activeAlerts = store.state.alerts
       .filter((alert) => alert.urlId === url.id && alert.status === 'active')
       .map((alert) => alert.alertType)

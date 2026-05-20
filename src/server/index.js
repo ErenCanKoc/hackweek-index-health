@@ -1329,7 +1329,7 @@ const server = http.createServer(async (request, response) => {
     }
 
     if (pathname === '/api/report.csv') {
-      sendText(response, 200, exportHealthReport(context.store), 'text/csv; charset=utf-8');
+      sendText(response, 200, exportHealthReport(context.store, Object.fromEntries(parsed.searchParams.entries())), 'text/csv; charset=utf-8');
       return;
     }
 

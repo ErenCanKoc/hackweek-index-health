@@ -309,6 +309,8 @@ async function loadUrls() {
   if (q) params.set('q', q);
   if (tier) params.set('priorityTier', tier);
   if (scaled) params.set('scaled', scaled);
+  const exportParams = new URLSearchParams(params);
+  document.querySelector('#export-filtered-urls').href = `/api/report.csv${exportParams.toString() ? `?${exportParams}` : ''}`;
   params.set('limit', state.urlLimit);
   params.set('offset', (state.urlPage - 1) * state.urlLimit);
   const result = await api(`/api/urls?${params}`);
