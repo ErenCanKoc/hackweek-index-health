@@ -933,7 +933,8 @@ const server = http.createServer(async (request, response) => {
       const body = await readBody(request);
       const summary = await runScheduler(context.store, context.config, {
         limit: body.limit ?? 100,
-        force: Boolean(body.force)
+        force: Boolean(body.force),
+        urlId: body.urlId ? Number(body.urlId) : null
       });
       await context.store.save();
       sendJson(response, 200, { ok: true, summary });

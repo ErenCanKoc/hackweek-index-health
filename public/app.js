@@ -283,6 +283,7 @@ async function loadUrls() {
         <td>
           <div class="row-actions">
             <button class="small-button" data-detail="${url.id}">${Number(state.openUrlId) === Number(url.id) ? 'Close' : 'Open'}</button>
+            <button class="small-button" data-inspect-now="${url.id}">Inspect</button>
             <button class="small-button" data-exclude="${url.id}">${url.isManuallyExcluded ? 'Include' : 'Exclude'}</button>
           </div>
         </td>
@@ -599,6 +600,20 @@ document.addEventListener('click', async (event) => {
 
   const detail = event.target.closest('[data-detail]');
   if (detail) await openDetail(detail.dataset.detail);
+
+  const inspectNow = event.target.closest('[data-inspect-now]');
+  if (inspectNow) {
+    const id = Number(inspectNow.dataset.inspectNow);
+    setStatus('Inspecting selected URL...');
+    const result = await api('/api/actions/run-scheduler', {
+      method: 'POST',
+      body: JSON.stringify({ limit: 1, force: true, urlId: id })
+    });
+    state.openUrlId = id;
+    state.openUrlDetail = await api(`/api/urls/${id}`);
+    await refresh();
+    setStatus(schedulerStatus(result.summary));
+  }
 
   const exclude = event.target.closest('[data-exclude]');
   if (exclude) {

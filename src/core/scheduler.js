@@ -43,9 +43,11 @@ export function ensureJobsForDueUrls(store, policy, now = new Date(), options = 
   const nowIsoValue = now.toISOString();
   const today = dateKey(now);
   const force = Boolean(options.force);
+  const targetUrlId = options.urlId ? Number(options.urlId) : null;
   let created = 0;
 
   for (const url of store.state.urls) {
+    if (targetUrlId && Number(url.id) !== targetUrlId) continue;
     if (!url.isActive || url.isManuallyExcluded || url.currentPriorityTier === 'Excluded') continue;
     if (!force && alreadyInspectedToday(store, url, now)) continue;
 
@@ -143,10 +145,11 @@ export async function runScheduler(store, config, options = {}) {
   const workerId = options.workerId ?? `worker-${process.pid}`;
   const limit = options.limit ?? 100;
   const force = Boolean(options.force);
+  const targetUrlId = options.urlId ? Number(options.urlId) : null;
   const provider = options.provider ?? createInspectionProvider(config.policy);
   const summary = {
     thresholds: recalculatePriorities(store),
-    createdJobs: ensureJobsForDueUrls(store, config.policy, now, { force }),
+    createdJobs: ensureJobsForDueUrls(store, config.policy, now, { force, urlId: targetUrlId }),
     inspected: 0,
     skipped: 0,
     alertsCreated: 0,
@@ -156,6 +159,7 @@ export async function runScheduler(store, config, options = {}) {
 
   const pendingJobs = store.state.inspectionJobs
     .filter((job) => job.status === 'pending' && new Date(job.dueAt) <= now)
+    .filter((job) => !targetUrlId || Number(job.urlId) === targetUrlId)
     .sort(jobSort)
     .slice(0, limit);
 

@@ -86,6 +86,12 @@ recalculatePriorities(store);
 assert.equal(manualOverrideUrl.currentPriorityTier, 'P0');
 assert.equal(manualOverrideUrl.manualPriorityTier, 'P0');
 
+const beforeSingleInspectResults = store.state.inspectionResults.length;
+const singleInspectSummary = await runScheduler(store, config, { limit: 1, force: true, urlId: manualOverrideUrl.id });
+assert.equal(singleInspectSummary.inspected, 1);
+assert.equal(store.state.inspectionResults.length, beforeSingleInspectResults + 1);
+assert.equal(store.state.inspectionResults.at(-1).urlId, manualOverrideUrl.id);
+
 console.log(JSON.stringify({
   ok: true,
   urls: store.state.urls.length,
