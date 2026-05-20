@@ -1282,6 +1282,32 @@ const server = http.createServer(async (request, response) => {
       return;
     }
 
+    const alertActionMatch = pathname.match(/^\/api\/alerts\/(\d+)\/(acknowledge|resolve|reopen)$/);
+    if (alertActionMatch && request.method === 'POST') {
+      const alert = context.store.findById('alerts', Number(alertActionMatch[1]));
+      if (!alert) {
+        sendJson(response, 404, { error: 'Alert not found' });
+        return;
+      }
+      const action = alertActionMatch[2];
+      if (action === 'acknowledge') {
+        alert.status = 'acknowledged';
+        alert.acknowledgedAt = nowIso();
+      }
+      if (action === 'resolve') {
+        alert.status = 'resolved';
+        alert.resolvedAt = nowIso();
+      }
+      if (action === 'reopen') {
+        alert.status = 'active';
+        alert.resolvedAt = null;
+      }
+      alert.updatedAt = nowIso();
+      await context.store.save();
+      sendJson(response, 200, { ok: true, alert });
+      return;
+    }
+
     if (pathname === '/api/scaled') {
       sendJson(response, 200, scaledDashboard(context.store));
       return;

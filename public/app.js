@@ -539,7 +539,7 @@ async function loadQuota() {
 async function loadAlerts() {
   const alerts = await api('/api/alerts');
   document.querySelector('#alerts-table').innerHTML = table(
-    ['Type', 'Severity', 'Status', 'URL', 'Current', 'Created', 'Recommendation'],
+    ['Type', 'Severity', 'Status', 'URL', 'Current', 'Created', 'Recommendation', 'Actions'],
     alerts.map((alert) => `
       <tr>
         <td>${alert.alertType}</td>
@@ -549,6 +549,13 @@ async function loadAlerts() {
         <td>${alert.currentState ?? '-'}</td>
         <td>${fmtDate(alert.createdAt)}</td>
         <td>${alert.recommendedAction ?? '-'}</td>
+        <td>
+          <div class="row-actions">
+            ${alert.status === 'active' ? `<button class="small-button" data-alert-action="acknowledge" data-alert-id="${alert.id}">Ack</button>` : ''}
+            ${alert.status !== 'resolved' ? `<button class="small-button" data-alert-action="resolve" data-alert-id="${alert.id}">Resolve</button>` : ''}
+            ${alert.status !== 'active' ? `<button class="small-button" data-alert-action="reopen" data-alert-id="${alert.id}">Reopen</button>` : ''}
+          </div>
+        </td>
       </tr>
     `)
   );
@@ -810,6 +817,18 @@ document.addEventListener('click', async (event) => {
     });
     await refresh();
     setStatus(`Rolled back import #${result.batch.id}. Deleted ${result.deletedUrls} URL(s), restored ${result.restoredMetrics} metric(s).`);
+  }
+
+  const alertAction = event.target.closest('[data-alert-action]');
+  if (alertAction) {
+    const action = alertAction.dataset.alertAction;
+    setStatus(`Updating alert ${alertAction.dataset.alertId}...`);
+    await api(`/api/alerts/${alertAction.dataset.alertId}/${action}`, {
+      method: 'POST',
+      body: '{}'
+    });
+    await refresh();
+    setStatus(`Alert ${action} complete.`);
   }
 
   const selectedUrl = event.target.closest('[data-select-url]');
