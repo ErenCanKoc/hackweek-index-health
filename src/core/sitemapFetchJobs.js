@@ -2,6 +2,7 @@ import pg from 'pg';
 import { loadConfig } from './config.js';
 import { ingestConfiguredSitemaps } from './ingestion.js';
 import { recalculatePriorities } from './priority.js';
+import { runScheduler } from './scheduler.js';
 import { Store } from './store.js';
 import { isSitemapLikeUrl } from './sitemap.js';
 import { nowIso } from './utils.js';
@@ -291,6 +292,16 @@ export async function executeSitemapFetchJob(jobId, options = {}) {
     const shouldRecalculatePriorities = fetchOptions.recalculatePriorities === true;
     const thresholds = shouldRecalculatePriorities ? recalculatePriorities(store) : null;
     await store.save();
+
+    let schedulerSummary = null;
+    if (fetchOptions.runSchedulerAfterFetch === true) {
+      schedulerSummary = await runScheduler(store, config, {
+        limit: Number(fetchOptions.schedulerLimit ?? process.env.DAILY_CRON_SCHEDULER_LIMIT ?? 500),
+        force: Boolean(fetchOptions.schedulerForce)
+      });
+      await store.save();
+    }
+
     if (typeof options.afterStateSave === 'function') await options.afterStateSave();
 
     const result = {
@@ -302,6 +313,7 @@ export async function executeSitemapFetchJob(jobId, options = {}) {
       urlsAfter: store.state.urls.length,
       urlsAddedOrUpdated: counts.urlCount,
       priorityRecalculated: shouldRecalculatePriorities,
+      schedulerSummary,
       thresholds
     };
     await updateSitemapFetchJob(jobId, {
@@ -335,4 +347,3 @@ export async function executeSitemapFetchJob(jobId, options = {}) {
     throw error;
   }
 }
-

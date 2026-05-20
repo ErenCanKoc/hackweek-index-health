@@ -2270,7 +2270,11 @@ async function startSitemapFetchAction(body = {}, parsed = null) {
     useDemoUrlsWhenChildFetchIsOff: typeof body.useDemoUrlsWhenChildFetchIsOff === 'boolean' ? body.useDemoUrlsWhenChildFetchIsOff : undefined,
     useDemoUrlsWhenChildFetchFails: typeof body.useDemoUrlsWhenChildFetchFails === 'boolean' ? body.useDemoUrlsWhenChildFetchFails : undefined,
     recalculatePriorities: body.recalculatePriorities === true || parsed?.searchParams?.get('recalculatePriorities') === 'true',
-    fetchConcurrency: Number(body.fetchConcurrency ?? parsed?.searchParams?.get('fetchConcurrency') ?? process.env.SITEMAP_FETCH_CONCURRENCY ?? 4)
+    fetchConcurrency: Number(body.fetchConcurrency ?? parsed?.searchParams?.get('fetchConcurrency') ?? process.env.SITEMAP_FETCH_CONCURRENCY ?? 4),
+    runSchedulerAfterFetch: body.runSchedulerAfterFetch === true,
+    schedulerLimit: Number(body.schedulerLimit ?? parsed?.searchParams?.get('limit') ?? process.env.DAILY_CRON_SCHEDULER_LIMIT ?? 500),
+    schedulerForce: body.schedulerForce === true || parsed?.searchParams?.get('force') === 'true',
+    reason: body.reason ?? null
   };
   const preferredMode = renderOneOffConfig().apiKey && renderOneOffConfig().serviceId ? 'render_one_off' : 'local';
   let job = await createSitemapFetchJob(options, preferredMode);
@@ -2290,9 +2294,10 @@ async function startSitemapFetchAction(body = {}, parsed = null) {
   }
 
   executeSitemapFetchJob(job.id, {
-    store: context?.store,
+    store: process.env.DATABASE_URL ? context?.store : undefined,
     config: context?.config,
     afterStateSave: async () => {
+      if (context?.store) await context.store.load();
       await refreshDashboardCache().catch((error) => console.error('Dashboard cache refresh failed after sitemap fetch:', error.message));
     }
   }).catch((error) => console.error('Sitemap fetch job failed:', error));
@@ -2304,23 +2309,23 @@ async function runDailySitemapFetchCron(reason = 'daily_cron') {
   cronState.running = true;
   cronState.lastRunAt = nowIso();
   try {
-    await ensureContextReady();
-    if (!context) throw contextError ?? new Error('App context is not ready.');
-    const cleanedBefore = removeSitemapUrlRecords(context.store);
-    const counts = await ingestConfiguredSitemaps(context.store, context.config, context.resolvePath, {
-      includeLocal: false,
+    const result = await startSitemapFetchAction({
+      reason,
       fetchChildSitemaps: true,
       useDemoUrlsWhenChildFetchIsOff: false,
-      useDemoUrlsWhenChildFetchFails: false
+      useDemoUrlsWhenChildFetchFails: false,
+      recalculatePriorities: true,
+      runSchedulerAfterFetch: true,
+      schedulerLimit: Number(process.env.DAILY_CRON_SCHEDULER_LIMIT ?? 500),
+      schedulerForce: false
     });
-    const cleanedAfter = removeSitemapUrlRecords(context.store);
-    const thresholds = recalculatePriorities(context.store);
-    await context.store.save();
     cronState.lastResult = {
       reason,
-      counts,
-      cleanedSitemapUrlRecords: cleanedBefore + cleanedAfter,
-      thresholds
+      accepted: result.accepted,
+      alreadyRunning: result.alreadyRunning,
+      jobId: result.job?.id ?? null,
+      triggerMode: result.triggerMode ?? result.job?.triggerMode ?? null,
+      startedAt: nowIso()
     };
     cronState.lastError = null;
     return cronState.lastResult;
@@ -2403,17 +2408,31 @@ const server = http.createServer(async (request, response) => {
         return;
       }
       const body = await readBody(request);
-      const fetchResult = await runDailySitemapFetchCron('external_cron');
-      const schedulerSummary = await runScheduler(context.store, context.config, {
-        limit: Number(body.limit ?? parsed.searchParams.get('limit') ?? process.env.DAILY_CRON_SCHEDULER_LIMIT ?? 500),
-        force: Boolean(body.force)
-      });
-      await context.store.save();
-      sendJson(response, 200, {
+      const fetchResult = await startSitemapFetchAction({
+        reason: 'external_cron',
+        fetchChildSitemaps: true,
+        useDemoUrlsWhenChildFetchIsOff: false,
+        useDemoUrlsWhenChildFetchFails: false,
+        recalculatePriorities: true,
+        runSchedulerAfterFetch: true,
+        schedulerLimit: Number(body.limit ?? parsed.searchParams.get('limit') ?? process.env.DAILY_CRON_SCHEDULER_LIMIT ?? 500),
+        schedulerForce: body.force === true || parsed.searchParams.get('force') === 'true'
+      }, parsed);
+      cronState.lastRunAt = nowIso();
+      cronState.lastResult = {
+        reason: 'external_cron',
+        accepted: fetchResult.accepted,
+        alreadyRunning: fetchResult.alreadyRunning,
+        jobId: fetchResult.job?.id ?? null,
+        triggerMode: fetchResult.triggerMode ?? fetchResult.job?.triggerMode ?? null,
+        startedAt: cronState.lastRunAt
+      };
+      cronState.lastError = null;
+      sendJson(response, fetchResult.alreadyRunning ? 200 : 202, {
         ok: true,
         now: nowIso(),
         fetchResult,
-        schedulerSummary,
+        schedulerQueuedAfterFetch: true,
         cron: cronState
       });
       return;

@@ -210,7 +210,7 @@ Set these environment/secrets:
 - Render: `CRON_SECRET`
 - GitHub Actions repository secrets: `CRON_SECRET` and `CRON_URL=https://hackweek-index-health.onrender.com/api/cron/daily`
 
-The included `.github/workflows/daily-cron.yml` runs every day at `03:00 UTC` and can also be run manually from GitHub Actions.
+The included `.github/workflows/daily-cron.yml` runs every day at `03:00 UTC` and can also be run manually from GitHub Actions. The cron endpoint now creates a durable sitemap fetch job; when that job finishes, it runs the inspection scheduler with the requested limit.
 
 ### 3. Manual URL entry
 
