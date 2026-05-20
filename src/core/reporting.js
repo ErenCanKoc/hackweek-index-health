@@ -114,6 +114,14 @@ export function urlDetail(store, id) {
     prioritySnapshots: store.state.prioritySnapshots.filter((snapshot) => snapshot.urlId === url.id).slice(-10).reverse(),
     inspections,
     transitions: store.state.stateTransitions.filter((transition) => transition.urlId === url.id).slice(-20).reverse(),
+    jobs: store.state.inspectionJobs
+      .filter((job) => job.urlId === url.id)
+      .slice(-20)
+      .reverse()
+      .map((job) => ({
+        ...job,
+        property: job.propertyId ? store.findById('properties', job.propertyId) : null
+      })),
     technicalChecks: store.state.technicalChecks.filter((check) => check.urlId === url.id).slice(-10).reverse(),
     alerts: store.state.alerts.filter((alert) => alert.urlId === url.id).slice(-20).reverse(),
     health: store.state.healthStatuses.find((status) => status.urlId === url.id) ?? null,

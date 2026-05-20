@@ -428,6 +428,17 @@ function detailRow(detail) {
                   <td>${candidate.eligible ? 'yes' : 'no'}</td>
                 </tr>
               `))}
+              <h2>Scheduler Jobs</h2>
+              ${table(['Status', 'Reason', 'Due', 'Attempts', 'Property', 'Error'], (detail.jobs ?? []).map((job) => `
+                <tr>
+                  <td>${pill(job.status)}</td>
+                  <td>${esc(job.reason)}</td>
+                  <td>${fmtDate(job.dueAt)}</td>
+                  <td>${job.attemptCount ?? 0}</td>
+                  <td><code>${esc(job.property?.propertyUrl ?? job.propertyId ?? '-')}</code></td>
+                  <td>${esc(job.lastError ?? '-')}</td>
+                </tr>
+              `))}
               ${table(['Type', 'Severity', 'Status', 'Action'], detail.alerts.map((alert) => `
                 <tr>
                   <td>${alert.alertType}</td>
