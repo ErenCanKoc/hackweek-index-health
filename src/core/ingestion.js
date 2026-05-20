@@ -163,8 +163,18 @@ export async function ingestConfiguredSitemaps(store, config, resolvePath, optio
     useDemoUrlsWhenChildFetchIsOff: options.useDemoUrlsWhenChildFetchIsOff ?? config.sources.useDemoUrlsWhenChildFetchIsOff,
     useDemoUrlsWhenChildFetchFails: options.useDemoUrlsWhenChildFetchFails ?? config.sources.useDemoUrlsWhenChildFetchFails
   };
-  const sitemapUrls = await expandSitemapSources(sources, resolvePath, { includeLocal: options.includeLocal });
+  const allSitemapUrls = await expandSitemapSources(sources, resolvePath, { includeLocal: options.includeLocal });
+  const sitemapBatchSize = Math.max(0, Number(options.sitemapBatchSize ?? options.maxSitemapsPerRun ?? 0) || 0);
+  const requestedSitemapBatchOffset = Math.max(0, Number(options.sitemapBatchOffset ?? 0) || 0);
+  const sitemapBatchOffset = sitemapBatchSize && requestedSitemapBatchOffset >= allSitemapUrls.length
+    ? 0
+    : requestedSitemapBatchOffset;
+  const sitemapUrls = sitemapBatchSize
+    ? allSitemapUrls.slice(sitemapBatchOffset, sitemapBatchOffset + sitemapBatchSize)
+    : allSitemapUrls;
   const totalSitemaps = sitemapUrls.length;
+  const nextSitemapBatchOffset = sitemapBatchOffset + totalSitemaps;
+  const hasMoreSitemaps = nextSitemapBatchOffset < allSitemapUrls.length;
   let urlCount = 0;
   const reportProgress = (progress) => {
     if (typeof options.onProgress !== 'function') return;
@@ -328,6 +338,11 @@ export async function ingestConfiguredSitemaps(store, config, resolvePath, optio
 
   return {
     sitemapCount: sitemapUrls.length,
+    sourceSitemapCount: allSitemapUrls.length,
+    sitemapBatchSize,
+    sitemapBatchOffset,
+    nextSitemapBatchOffset: hasMoreSitemaps ? nextSitemapBatchOffset : 0,
+    hasMoreSitemaps,
     urlCount,
     fetchSummary: {
       success: fetchResults.filter((item) => item.ok).length,

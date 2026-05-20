@@ -97,10 +97,11 @@ INSPECTION_PROVIDER=gsc
 RENDER_API_KEY=...
 RENDER_SERVICE_ID=srv-...
 SITEMAP_FETCH_CONCURRENCY=4
+SITEMAP_FETCH_BATCH_SIZE=50
 ```
 
 `ADMIN_PASSWORD` enables the built-in dashboard login. Without it, the app remains open for local development.
-`RENDER_API_KEY` and `RENDER_SERVICE_ID` let the dashboard start sitemap fetching as a Render one-off job, so large sitemap imports do not depend on the web request staying alive. The job table is created automatically in Postgres.
+`RENDER_API_KEY` and `RENDER_SERVICE_ID` let the dashboard start sitemap fetching as a Render one-off job, so large sitemap imports do not depend on the web request staying alive. The job table is created automatically in Postgres. `SITEMAP_FETCH_BATCH_SIZE` limits each run to that many sitemap files and automatically continues from the next batch on the following run; set it to `0` only when you intentionally want one job to fetch every sitemap source.
 
 8. In Google Cloud OAuth Client, add:
 
@@ -201,7 +202,7 @@ For free hosting that can sleep, trigger the daily work from an external schedul
 curl --request POST \
   --header "authorization: Bearer $RENDER_API_KEY" \
   --header "content-type: application/json" \
-  --data '{"startCommand":"SITEMAP_FETCH_CREATE_JOB=true SITEMAP_FETCH_REASON=external_daily DAILY_CRON_SCHEDULER_LIMIT=500 node scripts/run-sitemap-fetch-job.mjs --create"}' \
+  --data '{"startCommand":"SITEMAP_FETCH_CREATE_JOB=true SITEMAP_FETCH_REASON=external_daily SITEMAP_FETCH_BATCH_SIZE=50 DAILY_CRON_SCHEDULER_LIMIT=500 node scripts/run-sitemap-fetch-job.mjs --create"}' \
   https://api.render.com/v1/services/$RENDER_SERVICE_ID/jobs
 ```
 
@@ -210,7 +211,7 @@ Set these environment/secrets:
 - Render: `RENDER_API_KEY`, `RENDER_SERVICE_ID`, `CRON_SECRET`
 - GitHub Actions repository secrets: `RENDER_API_KEY` and `RENDER_SERVICE_ID`
 
-The included `.github/workflows/daily-cron.yml` runs every day at `03:00 UTC` and can also be run manually from GitHub Actions. The one-off command creates a durable sitemap fetch job; when that job finishes, it runs the inspection scheduler with the requested limit. `/api/cron/daily` is still available as a fallback HTTP endpoint.
+The included `.github/workflows/daily-cron.yml` runs every day at `03:00 UTC` and can also be run manually from GitHub Actions. The one-off command creates a durable sitemap fetch job; when that job finishes, it runs the inspection scheduler with the requested limit. Sitemap fetching is batched by default, so 400+ sitemap files and 100K+ imported URLs are spread across multiple runs instead of one very large Render job. `/api/cron/daily` is still available as a fallback HTTP endpoint.
 
 ### 3. Manual URL entry
 

@@ -24,5 +24,6 @@ jobs:
           START_COMMAND: >-
             SITEMAP_FETCH_CREATE_JOB=true
             SITEMAP_FETCH_REASON=github_actions_daily
+            SITEMAP_FETCH_BATCH_SIZE=50
             DAILY_CRON_SCHEDULER_LIMIT=500
             node scripts/run-sitemap-fetch-job.mjs --create

@@ -26,7 +26,11 @@ if (shouldCreateJob) {
     runSchedulerAfterFetch: true,
     schedulerLimit: Number(process.env.DAILY_CRON_SCHEDULER_LIMIT ?? 500),
     schedulerForce: false,
-    fetchConcurrency: Number(process.env.SITEMAP_FETCH_CONCURRENCY ?? 4)
+    fetchConcurrency: Number(process.env.SITEMAP_FETCH_CONCURRENCY ?? 4),
+    sitemapBatchSize: Number(process.env.SITEMAP_FETCH_BATCH_SIZE ?? 50),
+    sitemapBatchOffset: process.env.SITEMAP_FETCH_BATCH_OFFSET === undefined
+      ? undefined
+      : Number(process.env.SITEMAP_FETCH_BATCH_OFFSET)
   });
   const job = await createSitemapFetchJob(options, process.env.SITEMAP_FETCH_TRIGGER_MODE ?? 'render_one_off_direct');
   jobId = Number(job.id);

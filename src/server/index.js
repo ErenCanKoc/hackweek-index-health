@@ -2407,6 +2407,8 @@ async function startSitemapFetchAction(body = {}, parsed = null) {
     useDemoUrlsWhenChildFetchFails: typeof body.useDemoUrlsWhenChildFetchFails === 'boolean' ? body.useDemoUrlsWhenChildFetchFails : undefined,
     recalculatePriorities: body.recalculatePriorities === true || parsed?.searchParams?.get('recalculatePriorities') === 'true',
     fetchConcurrency: Number(body.fetchConcurrency ?? parsed?.searchParams?.get('fetchConcurrency') ?? process.env.SITEMAP_FETCH_CONCURRENCY ?? 4),
+    sitemapBatchSize: Number(body.sitemapBatchSize ?? parsed?.searchParams?.get('sitemapBatchSize') ?? process.env.SITEMAP_FETCH_BATCH_SIZE ?? 50),
+    sitemapBatchOffset: body.sitemapBatchOffset ?? parsed?.searchParams?.get('sitemapBatchOffset') ?? undefined,
     runSchedulerAfterFetch: body.runSchedulerAfterFetch === true,
     schedulerLimit: Number(body.schedulerLimit ?? parsed?.searchParams?.get('limit') ?? process.env.DAILY_CRON_SCHEDULER_LIMIT ?? 500),
     schedulerForce: body.schedulerForce === true || parsed?.searchParams?.get('force') === 'true',
@@ -2453,6 +2455,7 @@ async function runDailySitemapFetchCron(reason = 'daily_cron') {
       recalculatePriorities: true,
       runSchedulerAfterFetch: true,
       schedulerLimit: Number(process.env.DAILY_CRON_SCHEDULER_LIMIT ?? 500),
+      sitemapBatchSize: Number(process.env.SITEMAP_FETCH_BATCH_SIZE ?? 50),
       schedulerForce: false
     });
     cronState.lastResult = {

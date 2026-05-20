@@ -89,6 +89,7 @@ export async function ensureSitemapFetchJobTable() {
 }
 
 export async function createSitemapFetchJob(options = {}, triggerMode = 'local') {
+  const normalizedOptions = await withAutoSitemapBatchOffset(options);
   const progress = defaultSitemapFetchProgress();
   const pool = getJobPool();
   if (pool) {
@@ -99,7 +100,7 @@ export async function createSitemapFetchJob(options = {}, triggerMode = 'local')
         VALUES ($1, 'queued', $2, $3::jsonb, $4::jsonb)
         RETURNING *
       `,
-      [appStateKey(), triggerMode, JSON.stringify(options), JSON.stringify(progress)]
+      [appStateKey(), triggerMode, JSON.stringify(normalizedOptions), JSON.stringify(progress)]
     );
     return toJob(result.rows[0]);
   }
@@ -109,7 +110,7 @@ export async function createSitemapFetchJob(options = {}, triggerMode = 'local')
   const job = store.insert('sitemapFetchJobs', {
     status: 'queued',
     triggerMode,
-    options,
+    options: normalizedOptions,
     progress,
     renderJob: null,
     result: null,
@@ -121,6 +122,31 @@ export async function createSitemapFetchJob(options = {}, triggerMode = 'local')
   });
   await store.save();
   return job;
+}
+
+async function withAutoSitemapBatchOffset(options = {}) {
+  const sitemapBatchSize = Math.max(0, Number(options.sitemapBatchSize ?? options.maxSitemapsPerRun ?? 0) || 0);
+  if (!sitemapBatchSize) return options;
+  if (options.sitemapBatchOffset !== undefined && options.sitemapBatchOffset !== null) {
+    return {
+      ...options,
+      sitemapBatchSize,
+      sitemapBatchOffset: Math.max(0, Number(options.sitemapBatchOffset) || 0)
+    };
+  }
+
+  const jobs = await listSitemapFetchJobs(20).catch(() => []);
+  const lastCompleted = jobs.find((job) => job.status === 'completed' && job.result?.counts?.sourceSitemapCount);
+  const lastCounts = lastCompleted?.result?.counts;
+  const sitemapBatchOffset = lastCounts?.hasMoreSitemaps
+    ? Math.max(0, Number(lastCounts.nextSitemapBatchOffset) || 0)
+    : 0;
+
+  return {
+    ...options,
+    sitemapBatchSize,
+    sitemapBatchOffset
+  };
 }
 
 export async function updateSitemapFetchJob(jobId, patch = {}) {
@@ -279,6 +305,8 @@ export async function executeSitemapFetchJob(jobId, options = {}) {
       useDemoUrlsWhenChildFetchIsOff: fetchOptions.useDemoUrlsWhenChildFetchIsOff ?? config.sources.useDemoUrlsWhenChildFetchIsOff,
       useDemoUrlsWhenChildFetchFails: fetchOptions.useDemoUrlsWhenChildFetchFails ?? config.sources.useDemoUrlsWhenChildFetchFails,
       fetchConcurrency: fetchOptions.fetchConcurrency,
+      sitemapBatchSize: fetchOptions.sitemapBatchSize ?? fetchOptions.maxSitemapsPerRun,
+      sitemapBatchOffset: fetchOptions.sitemapBatchOffset,
       onProgress: (progress) => {
         const now = Date.now();
         if (now - lastProgressWrite < 1000 && progress.phase !== 'complete') return;
