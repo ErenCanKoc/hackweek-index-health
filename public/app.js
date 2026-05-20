@@ -1078,20 +1078,26 @@ document.querySelector('#import-csv').addEventListener('click', async () => {
     setStatus('Preview CSV before applying import.');
     return;
   }
-  setStatus('Importing CSV and recalculating priorities...');
-  const result = await api('/api/settings/csv-import', {
-    method: 'POST',
-    body: JSON.stringify(state.pendingCsvImport)
-  });
-  state.pendingCsvImport = null;
-  document.querySelector('#csv-import-text').value = '';
-  document.querySelector('#csv-import-file').value = '';
-  document.querySelector('#csv-import-result').value = `${result.importedRows} rows, ${result.urlsAdded} new URLs`;
-  document.querySelector('#csv-preview').innerHTML = '';
   document.querySelector('#import-csv').disabled = true;
   document.querySelector('#cancel-csv-import').disabled = true;
-  await refresh();
-  setStatus(`Imported ${result.importedRows} ${result.importType} row(s). URL list is now ${result.urlsAfter}.`);
+  setStatus('Importing CSV and recalculating priorities...');
+  try {
+    const result = await api('/api/settings/csv-import', {
+      method: 'POST',
+      body: JSON.stringify(state.pendingCsvImport)
+    });
+    state.pendingCsvImport = null;
+    document.querySelector('#csv-import-text').value = '';
+    document.querySelector('#csv-import-file').value = '';
+    document.querySelector('#csv-import-result').value = `${result.importedRows} rows, ${result.urlsAdded} new URLs`;
+    document.querySelector('#csv-preview').innerHTML = '';
+    await refresh();
+    setStatus(`Imported ${result.importedRows} ${result.importType} row(s). URL list is now ${result.urlsAfter}.`);
+  } catch (error) {
+    document.querySelector('#import-csv').disabled = false;
+    document.querySelector('#cancel-csv-import').disabled = false;
+    setStatus(`CSV import failed: ${error.message}`);
+  }
 });
 
 document.querySelector('#manual-overrides-search').addEventListener('input', () => {

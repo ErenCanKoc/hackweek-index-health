@@ -240,28 +240,46 @@ export function ingestGscCsvText(store, text, sourceName = 'dashboard') {
   const rows = parseCsv(text);
   const now = nowIso();
   let count = 0;
+  const latestByUrl = new Map();
 
   for (const row of rows) {
     if (!row.url) continue;
     const url = normalizeUrl(row.url);
-    const record = upsertUrl(store, {
+    latestByUrl.set(url, {
       url,
+      click: Number(row.click ?? 0),
+      impression: Number(row.impression ?? 0),
+      avgPosition: Number(row.avg_position ?? row.avgPosition ?? 0),
+      sourceProperty: row.property ?? row.source_property ?? null
+    });
+  }
+
+  for (const metric of latestByUrl.values()) {
+    const record = upsertUrl(store, {
+      url: metric.url,
       lastBusinessMetricSeenAt: now
     });
     if (!record) continue;
 
     store.upsert(
       'gscPerformanceMetrics',
-      (metric) => metric.urlId === record.id && metric.importedAt === now,
+      (row) => row.urlId === record.id && row.sourceProperty === metric.sourceProperty,
       {
         urlId: record.id,
-        url,
-        click: Number(row.click ?? 0),
-        impression: Number(row.impression ?? 0),
-        avgPosition: Number(row.avg_position ?? row.avgPosition ?? 0),
-        sourceProperty: row.property ?? row.source_property ?? null,
+        url: metric.url,
+        click: metric.click,
+        impression: metric.impression,
+        avgPosition: metric.avgPosition,
+        sourceProperty: metric.sourceProperty,
         importedAt: now,
         createdAt: now
+      },
+      {
+        url: metric.url,
+        click: metric.click,
+        impression: metric.impression,
+        avgPosition: metric.avgPosition,
+        importedAt: now
       }
     );
     count += 1;

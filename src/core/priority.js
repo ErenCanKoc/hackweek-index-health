@@ -16,6 +16,27 @@ function latestMetricByUrl(metrics, metricType) {
   return latest;
 }
 
+function latestPrioritySnapshot(store, urlId) {
+  for (let index = store.state.prioritySnapshots.length - 1; index >= 0; index -= 1) {
+    const snapshot = store.state.prioritySnapshots[index];
+    if (Number(snapshot.urlId) === Number(urlId)) return snapshot;
+  }
+  return null;
+}
+
+function savePrioritySnapshotIfChanged(store, url, snapshot) {
+  const previous = latestPrioritySnapshot(store, url.id);
+  const changed = !previous
+    || previous.priorityTier !== snapshot.priorityTier
+    || Boolean(previous.organicFlag) !== Boolean(snapshot.organicFlag)
+    || Boolean(previous.signupFlag) !== Boolean(snapshot.signupFlag)
+    || Boolean(previous.p30Flag) !== Boolean(snapshot.p30Flag)
+    || Boolean(previous.scaledFlag) !== Boolean(snapshot.scaledFlag)
+    || Boolean(previous.manualFlag) !== Boolean(snapshot.manualFlag)
+    || Boolean(previous.combinedBusinessFlag) !== Boolean(snapshot.combinedBusinessFlag);
+  if (changed) store.insert('prioritySnapshots', snapshot);
+}
+
 export function calculateThresholds(store) {
   const clicks = store.state.gscPerformanceMetrics.map((row) => Number(row.click || 0));
   const p30 = store.state.businessMetrics
@@ -40,12 +61,13 @@ export function recalculatePriorities(store) {
   const latestGsc = latestMetricByUrl(store.state.gscPerformanceMetrics);
 
   for (const url of store.state.urls) {
+    const previousTier = url.currentPriorityTier;
     if (url.manualPriorityTier) {
       url.currentPriorityTier = url.manualPriorityTier;
       url.isManuallyExcluded = url.manualPriorityTier === 'Excluded';
       url.isActive = url.manualPriorityTier !== 'Excluded';
-      url.updatedAt = now;
-      store.insert('prioritySnapshots', {
+      if (previousTier !== url.currentPriorityTier) url.updatedAt = now;
+      savePrioritySnapshotIfChanged(store, url, {
         urlId: url.id,
         calculatedAt: now,
         priorityTier: url.manualPriorityTier,
@@ -85,9 +107,9 @@ export function recalculatePriorities(store) {
     }
 
     url.currentPriorityTier = tier;
-    url.updatedAt = now;
+    if (previousTier !== tier) url.updatedAt = now;
 
-    store.insert('prioritySnapshots', {
+    savePrioritySnapshotIfChanged(store, url, {
       urlId: url.id,
       calculatedAt: now,
       priorityTier: tier,
