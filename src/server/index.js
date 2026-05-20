@@ -2,6 +2,7 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import pg from 'pg';
 import { fileURLToPath } from 'node:url';
 import { createContext, seedContext } from '../core/bootstrap.js';
 import { loadConfig, readJson, writeJson } from '../core/config.js';
@@ -58,10 +59,21 @@ function cronSecret() {
   return String(process.env.CRON_SECRET ?? '').trim();
 }
 
+function recoverySecret() {
+  return String(process.env.RECOVERY_SECRET || process.env.CRON_SECRET || '').trim();
+}
+
 function isCronAuthorized(parsed, request) {
   const expected = cronSecret();
   if (!expected) return false;
   const supplied = request.headers['x-cron-secret'] || parsed.searchParams.get('secret');
+  return safeEqual(String(supplied ?? ''), expected);
+}
+
+function isRecoveryAuthorized(parsed, request) {
+  const expected = recoverySecret();
+  if (!expected) return false;
+  const supplied = request.headers['x-recovery-secret'] || request.headers['x-cron-secret'] || parsed.searchParams.get('secret');
   return safeEqual(String(supplied ?? ''), expected);
 }
 
@@ -507,10 +519,6 @@ function businessMetricKey(metric) {
   return `${metric.urlId}:${metric.metricType}:${metric.metricMonth}`;
 }
 
-function metricMap(rows, keyFn) {
-  return new Map(rows.map((row) => [keyFn(row), structuredClone(row)]));
-}
-
 function createImportBatch(store, payload) {
   return store.insert('importBatches', {
     ...payload,
@@ -543,6 +551,68 @@ function rollbackImportBatch(store, batchId) {
   batch.updatedAt = nowIso();
   const restoredMetrics = previousGsc.size + previousBusiness.size;
   return { batch, deletedUrls, restoredMetrics };
+}
+
+async function compactPostgresState({ aggressive = false } = {}) {
+  if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL is required for recovery compaction.');
+  const pool = new pg.Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: false },
+    max: 1
+  });
+  const appStateKey = process.env.APP_STATE_KEY || 'default';
+  const heavyKeys = [
+    'prioritySnapshots',
+    'inspectionJobs',
+    'gscPerformanceMetrics',
+    'businessMetrics',
+    'importBatches',
+    'stateTransitions',
+    'technicalChecks'
+  ];
+  if (aggressive) {
+    heavyKeys.push('inspectionResults', 'alerts');
+  }
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS app_state (
+        id TEXT PRIMARY KEY,
+        state JSONB NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      )
+    `);
+    const beforeResult = await pool.query(
+      `
+        SELECT ${heavyKeys.map((key) => `COALESCE(jsonb_array_length(state->'${key}'), 0) AS "${key}"`).join(', ')}
+        FROM app_state
+        WHERE id = $1
+      `,
+      [appStateKey]
+    );
+    let expression = 'state';
+    for (const key of heavyKeys) {
+      expression = `jsonb_set(${expression}, '{${key}}', '[]'::jsonb, true)`;
+    }
+    const afterResult = await pool.query(
+      `
+        UPDATE app_state
+        SET state = ${expression},
+            updated_at = now()
+        WHERE id = $1
+        RETURNING ${heavyKeys.map((key) => `COALESCE(jsonb_array_length(state->'${key}'), 0) AS "${key}"`).join(', ')}
+      `,
+      [appStateKey]
+    );
+    return {
+      appStateKey,
+      aggressive,
+      clearedKeys: heavyKeys,
+      before: beforeResult.rows[0] ?? {},
+      after: afterResult.rows[0] ?? {}
+    };
+  } finally {
+    await pool.end();
+  }
 }
 
 function openAiStatus() {
@@ -808,6 +878,22 @@ const server = http.createServer(async (request, response) => {
       return;
     }
 
+    if (pathname === '/api/recovery/compact' && request.method === 'POST') {
+      if (!isRecoveryAuthorized(parsed, request)) {
+        sendJson(response, 401, { error: 'Invalid or missing recovery secret' });
+        return;
+      }
+      const body = await readBody(request);
+      const result = await compactPostgresState({
+        aggressive: body.aggressive === true || parsed.searchParams.get('aggressive') === 'true'
+      });
+      context = null;
+      contextError = null;
+      contextReady = null;
+      sendJson(response, 200, { ok: true, result });
+      return;
+    }
+
     if (pathname === '/api/cron/daily' && request.method === 'POST') {
       if (!isCronAuthorized(parsed, request)) {
         sendJson(response, 401, { error: 'Invalid or missing cron secret' });
@@ -1066,8 +1152,6 @@ const server = http.createServer(async (request, response) => {
       const beforeUrls = context.store.state.urls.length;
       const sourceName = `dashboard:${importType}:${nowIso()}`;
       const beforeUrlIds = new Set(context.store.state.urls.map((url) => Number(url.id)));
-      const beforeGscMetrics = metricMap(context.store.state.gscPerformanceMetrics, gscMetricKey);
-      const beforeBusinessMetrics = metricMap(context.store.state.businessMetrics, businessMetricKey);
       let importedRows = 0;
       if (importType === 'gsc') {
         importedRows = ingestGscCsvText(context.store, csvText, sourceName);
@@ -1083,12 +1167,6 @@ const server = http.createServer(async (request, response) => {
       const touchedBusinessMetricKeys = context.store.state.businessMetrics
         .filter((metric) => metric.sourceFile === sourceName)
         .map(businessMetricKey);
-      const previousGscMetrics = touchedGscMetricKeys
-        .map((key) => beforeGscMetrics.get(key))
-        .filter(Boolean);
-      const previousBusinessMetrics = touchedBusinessMetricKeys
-        .map((key) => beforeBusinessMetrics.get(key))
-        .filter(Boolean);
       const thresholds = recalculatePriorities(context.store);
       const batch = createImportBatch(context.store, {
         importType,
@@ -1099,9 +1177,7 @@ const server = http.createServer(async (request, response) => {
         urlsAdded: context.store.state.urls.length - beforeUrls,
         createdUrlIds,
         touchedGscMetricKeys,
-        touchedBusinessMetricKeys,
-        previousGscMetrics,
-        previousBusinessMetrics
+        touchedBusinessMetricKeys
       });
       await context.store.save();
       sendJson(response, 200, {
