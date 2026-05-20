@@ -588,6 +588,25 @@ details .button.secondary:hover {
   background: rgba(255, 255, 255, 0.08);
 }
 
+.pagination-bar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin: -4px 0 12px;
+}
+
+.pagination-bar .button {
+  min-height: 36px;
+  padding: 0 14px;
+}
+
+.button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+}
+
 input,
 select,
 textarea {

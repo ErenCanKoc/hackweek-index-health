@@ -5,7 +5,9 @@ const state = {
   openUrlId: null,
   openUrlDetail: null,
   selectedUrlIds: new Set(),
-  pendingCsvImport: null
+  pendingCsvImport: null,
+  urlPage: 1,
+  urlLimit: 150
 };
 
 const titleMap = {
@@ -89,6 +91,19 @@ function propertySource(property) {
 function updateSelectedCount() {
   const target = document.querySelector('#selected-url-count');
   if (target) target.textContent = `${state.selectedUrlIds.size} selected`;
+}
+
+function renderPagination(meta) {
+  const total = meta.total ?? 0;
+  const limit = meta.limit ?? state.urlLimit;
+  const offset = meta.offset ?? 0;
+  const start = total ? offset + 1 : 0;
+  const end = Math.min(offset + limit, total);
+  return `
+    <span class="selection-count">${start}-${end} / ${total} URLs</span>
+    <button id="prev-url-page" class="button secondary" ${offset <= 0 ? 'disabled' : ''}>Previous</button>
+    <button id="next-url-page" class="button secondary" ${meta.hasMore ? '' : 'disabled'}>Next</button>
+  `;
 }
 
 function sourceRows(settings) {
@@ -276,10 +291,20 @@ async function loadUrls() {
   if (q) params.set('q', q);
   if (tier) params.set('priorityTier', tier);
   if (scaled) params.set('scaled', scaled);
-  const urls = await api(`/api/urls?${params}`);
+  params.set('limit', state.urlLimit);
+  params.set('offset', (state.urlPage - 1) * state.urlLimit);
+  const result = await api(`/api/urls?${params}`);
+  const urls = result.rows ?? result;
+  const meta = result.rows ? result : {
+    total: urls.length,
+    limit: urls.length,
+    offset: 0,
+    hasMore: false
+  };
   if (state.openUrlId && !state.openUrlDetail) {
     state.openUrlDetail = await api(`/api/urls/${state.openUrlId}`);
   }
+  document.querySelector('#url-pagination').innerHTML = renderPagination(meta);
   document.querySelector('#url-table').innerHTML = table(
     ['<label class="select-all-control"><input id="select-all-urls" type="checkbox"> All</label>', 'URL', 'Tier', 'State', 'Health', 'Category', 'Locale', 'Scaled', 'Next Due', 'Actions'],
     urls.flatMap((url) => [`
@@ -495,7 +520,11 @@ async function loadRoadmap() {
 }
 
 async function loadSettings() {
-  const [urls, settings, sitemaps] = await Promise.all([api('/api/urls'), api('/api/settings'), api('/api/sitemaps')]);
+  const manualSearch = document.querySelector('#manual-overrides-search')?.value?.trim() ?? '';
+  const manualParams = new URLSearchParams({ limit: '200' });
+  if (manualSearch) manualParams.set('q', manualSearch);
+  const [urlData, settings, sitemaps] = await Promise.all([api(`/api/urls?${manualParams}`), api('/api/settings'), api('/api/sitemaps')]);
+  const urls = urlData.rows ?? urlData;
   const auth = settings.googleAuth;
   const manualCategory = document.querySelector('#manual-category');
   if (manualCategory && !manualCategory.innerHTML) manualCategory.innerHTML = categoryOptions('pages');
@@ -589,14 +618,14 @@ async function loadSettings() {
     document.querySelector('#gsc-sites').innerHTML = '';
   }
 
-  const manualSearch = document.querySelector('#manual-overrides-search')?.value?.toLowerCase() ?? '';
+  const manualSearchLower = manualSearch.toLowerCase();
   const manualRows = urls.filter((url) => {
     const sourceText = (url.sources ?? [])
       .map((source) => source.sourceSitemapUrl || source.sourceIdentifier)
       .filter(Boolean)
       .join(' ')
       .toLowerCase();
-    return !manualSearch || url.normalizedUrl.toLowerCase().includes(manualSearch) || sourceText.includes(manualSearch);
+    return !manualSearchLower || url.normalizedUrl.toLowerCase().includes(manualSearchLower) || sourceText.includes(manualSearchLower);
   });
   document.querySelector('#manual-overrides').innerHTML = table(
     ['URL', 'Source Sitemap', 'Tier', 'Active', 'Manual', 'Action'],
@@ -648,6 +677,20 @@ document.addEventListener('click', async (event) => {
 
   const detail = event.target.closest('[data-detail]');
   if (detail) await openDetail(detail.dataset.detail);
+
+  if (event.target.closest('#prev-url-page')) {
+    state.urlPage = Math.max(1, state.urlPage - 1);
+    state.openUrlId = null;
+    state.openUrlDetail = null;
+    await loadUrls();
+  }
+
+  if (event.target.closest('#next-url-page')) {
+    state.urlPage += 1;
+    state.openUrlId = null;
+    state.openUrlDetail = null;
+    await loadUrls();
+  }
 
   const inspectNow = event.target.closest('[data-inspect-now]');
   if (inspectNow) {
@@ -1009,6 +1052,9 @@ document.querySelector('#manual-overrides-search').addEventListener('input', () 
 
 ['#url-search', '#tier-filter', '#scaled-filter'].forEach((selector) => {
   document.querySelector(selector).addEventListener('input', () => {
+    state.urlPage = 1;
+    state.openUrlId = null;
+    state.openUrlDetail = null;
     if (state.view === 'urls') loadUrls().catch((error) => setStatus(error.message));
   });
 });

@@ -44,7 +44,23 @@ export function overview(store) {
 }
 
 export function urlExplorer(store, filters = {}) {
-  return store.state.urls
+  const limit = Math.max(1, Math.min(Number(filters.limit || 0) || store.state.urls.length, 500));
+  const offset = Math.max(0, Number(filters.offset || 0) || 0);
+  const paginated = filters.limit !== undefined || filters.offset !== undefined;
+  const query = String(filters.q ?? '').toLowerCase();
+  const healthByUrlId = new Map(store.state.healthStatuses.map((status) => [status.urlId, status]));
+  const sourcesByUrlId = new Map();
+  for (const source of store.state.urlSources) {
+    if (!sourcesByUrlId.has(source.urlId)) sourcesByUrlId.set(source.urlId, []);
+    sourcesByUrlId.get(source.urlId).push(source);
+  }
+  const alertsByUrlId = new Map();
+  for (const alert of store.state.alerts) {
+    if (alert.status !== 'active') continue;
+    if (!alertsByUrlId.has(alert.urlId)) alertsByUrlId.set(alert.urlId, []);
+    alertsByUrlId.get(alert.urlId).push(alert);
+  }
+  const filtered = store.state.urls
     .filter((url) => {
       if (filters.priorityTier && url.currentPriorityTier !== filters.priorityTier) return false;
       if (filters.indexState && url.currentIndexState !== filters.indexState) return false;
@@ -52,15 +68,31 @@ export function urlExplorer(store, filters = {}) {
       if (filters.locale && url.locale !== filters.locale) return false;
       if (filters.scaled === 'true' && !url.isScaledContent) return false;
       if (filters.scaled === 'false' && url.isScaledContent) return false;
-      if (filters.q && !url.normalizedUrl.includes(filters.q)) return false;
+      if (query) {
+        const sourceText = (sourcesByUrlId.get(url.id) ?? [])
+          .map((source) => source.sourceSitemapUrl || source.sourceIdentifier)
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase();
+        if (!url.normalizedUrl.toLowerCase().includes(query) && !sourceText.includes(query)) return false;
+      }
       return true;
-    })
-    .map((url) => ({
+    });
+  const page = filtered.slice(offset, offset + limit);
+  const rows = page.map((url) => ({
       ...url,
-      health: store.state.healthStatuses.find((status) => status.urlId === url.id) ?? null,
-      sources: store.state.urlSources.filter((source) => source.urlId === url.id),
-      activeAlerts: store.state.alerts.filter((alert) => alert.urlId === url.id && alert.status === 'active')
+      health: healthByUrlId.get(url.id) ?? null,
+      sources: sourcesByUrlId.get(url.id) ?? [],
+      activeAlerts: alertsByUrlId.get(url.id) ?? []
     }));
+  if (!paginated) return rows;
+  return {
+    rows,
+    total: filtered.length,
+    limit,
+    offset,
+    hasMore: offset + limit < filtered.length
+  };
 }
 
 export function urlDetail(store, id) {
