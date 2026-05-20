@@ -97,6 +97,7 @@ export function urlFromPath(path) {
 
 export function parseCsv(text) {
   const rows = [];
+  const delimiter = detectDelimitedTextSeparator(text);
   let current = '';
   let row = [];
   let inQuotes = false;
@@ -110,7 +111,7 @@ export function parseCsv(text) {
       index += 1;
     } else if (char === '"') {
       inQuotes = !inQuotes;
-    } else if (char === ',' && !inQuotes) {
+    } else if (char === delimiter && !inQuotes) {
       row.push(current.trim());
       current = '';
     } else if ((char === '\n' || char === '\r') && !inQuotes) {
@@ -131,7 +132,31 @@ export function parseCsv(text) {
 
   const [headers, ...records] = rows;
   if (!headers) return [];
-  return records.map((record) => Object.fromEntries(headers.map((header, index) => [header, record[index] ?? ''])));
+  return records.map((record) => Object.fromEntries(headers.map((header, index) => [normalizeCsvHeader(header), record[index] ?? ''])));
+}
+
+function detectDelimitedTextSeparator(text) {
+  const firstLine = String(text ?? '').split(/\r?\n/, 1)[0] ?? '';
+  const counts = { ',': 0, ';': 0, '\t': 0 };
+  let inQuotes = false;
+
+  for (let index = 0; index < firstLine.length; index += 1) {
+    const char = firstLine[index];
+    const next = firstLine[index + 1];
+    if (char === '"' && next === '"') {
+      index += 1;
+    } else if (char === '"') {
+      inQuotes = !inQuotes;
+    } else if (!inQuotes && Object.hasOwn(counts, char)) {
+      counts[char] += 1;
+    }
+  }
+
+  return Object.entries(counts).sort(([, a], [, b]) => b - a)[0]?.[0] ?? ',';
+}
+
+function normalizeCsvHeader(header) {
+  return String(header ?? '').replace(/^\uFEFF/, '').trim();
 }
 
 export function pickPercentile(values, percentile) {

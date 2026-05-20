@@ -59,6 +59,16 @@ const p30ImportRows = ingestBusinessWideCsvText(
 assert.equal(p30ImportRows, 1);
 assert.ok(store.state.businessMetrics.find((metric) => metric.path === '/dashboard-p30-test/' && metric.metricType === 'p30_users'));
 
+const signupImportRows = ingestBusinessWideCsvText(
+  store,
+  'URL;2026-05-01;2026-06-01\nhttps://www.jotform.com/dashboard-signup-test/;1,234;5',
+  'signup_count',
+  'smoke:signup'
+);
+assert.equal(signupImportRows, 2);
+assert.ok(store.state.businessMetrics.find((metric) => metric.path === '/dashboard-signup-test/' && metric.metricMonth === '2026-05-01' && metric.metricValue === 1234));
+assert.equal(store.state.businessMetrics.some((metric) => metric.metricMonth.toLowerCase() === 'url'), false);
+
 assert.equal(normalizeUrl('http://WWW.JOTFORM.com/blog/test/?utm_source=x&b=2&a=1#top'), 'https://www.jotform.com/blog/test/?a=1&b=2');
 assert.equal(normalizeUrl('https://www.jotform.com/tr/'), 'https://www.jotform.com/tr/');
 assert.equal(normalizeUrl('https://www.jotform.com/blog/test/'), 'https://www.jotform.com/blog/test/');

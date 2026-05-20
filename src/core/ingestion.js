@@ -9,6 +9,31 @@ import {
 } from './sitemap.js';
 import { compact, parseCsv, nowIso, normalizeUrl, pathFromUrl, urlFromPath } from './utils.js';
 
+function getCsvValue(row, names) {
+  const lookup = new Map(Object.entries(row).map(([key, value]) => [key.trim().toLowerCase(), value]));
+  for (const name of names) {
+    const value = lookup.get(String(name).trim().toLowerCase());
+    if (value !== undefined) return value;
+  }
+  return undefined;
+}
+
+function isBusinessMetricColumn(key) {
+  const normalized = String(key ?? '').trim().toLowerCase();
+  if (!normalized || ['path', 'url', 'page', 'landing page', 'landing_page'].includes(normalized)) return false;
+  return /^\d{4}-\d{2}(?:-\d{2})?$/.test(normalized);
+}
+
+function parseMetricValue(value) {
+  const normalized = String(value ?? '')
+    .trim()
+    .replace(/[%\s]/g, '')
+    .replace(/,/g, '');
+  if (!normalized) return 0;
+  const number = Number(normalized);
+  return Number.isFinite(number) ? number : 0;
+}
+
 function detectLocaleFromPath(path) {
   const match = path.match(/^\/([a-z]{2})(?:\/|$)/i);
   return match ? match[1].toLowerCase() : 'en';
@@ -406,14 +431,15 @@ export function ingestGscCsvText(store, text, sourceName = 'dashboard') {
   const latestByUrl = new Map();
 
   for (const row of rows) {
-    if (!row.url) continue;
-    const url = normalizeUrl(row.url);
+    const rawUrl = getCsvValue(row, ['url', 'page', 'landing page', 'landing_page']);
+    if (!rawUrl) continue;
+    const url = normalizeUrl(rawUrl);
     latestByUrl.set(url, {
       url,
-      click: Number(row.click ?? 0),
-      impression: Number(row.impression ?? 0),
-      avgPosition: Number(row.avg_position ?? row.avgPosition ?? 0),
-      sourceProperty: row.property ?? row.source_property ?? null
+      click: parseMetricValue(getCsvValue(row, ['click', 'clicks'])),
+      impression: parseMetricValue(getCsvValue(row, ['impression', 'impressions'])),
+      avgPosition: parseMetricValue(getCsvValue(row, ['avg_position', 'avgPosition', 'position', 'avg position'])),
+      sourceProperty: getCsvValue(row, ['property', 'source_property', 'sourceProperty']) ?? null
     });
   }
 
@@ -464,9 +490,10 @@ export function ingestBusinessWideCsvText(store, text, metricType, sourceName = 
   let count = 0;
 
   for (const row of rows) {
-    const path = row.path ?? row.url;
-    if (!path) continue;
-    const url = urlFromPath(path);
+    const rawPath = getCsvValue(row, ['path', 'url', 'page', 'landing page', 'landing_page']);
+    if (!rawPath) continue;
+    const url = urlFromPath(rawPath);
+    const path = pathFromUrl(url);
     const record = upsertUrl(store, {
       url,
       lastBusinessMetricSeenAt: now
@@ -474,7 +501,7 @@ export function ingestBusinessWideCsvText(store, text, metricType, sourceName = 
     if (!record) continue;
 
     for (const [key, value] of Object.entries(row)) {
-      if (key === 'path') continue;
+      if (!isBusinessMetricColumn(key)) continue;
       store.upsert(
         'businessMetrics',
         (metric) => metric.urlId === record.id && metric.metricType === metricType && metric.metricMonth === key,
@@ -483,13 +510,13 @@ export function ingestBusinessWideCsvText(store, text, metricType, sourceName = 
           path,
           metricType,
           metricMonth: key,
-          metricValue: Number(value || 0),
+          metricValue: parseMetricValue(value),
           sourceFile: sourceName,
           importedAt: now,
           createdAt: now
         },
         {
-          metricValue: Number(value || 0),
+          metricValue: parseMetricValue(value),
           sourceFile: sourceName,
           importedAt: now
         }

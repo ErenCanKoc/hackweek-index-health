@@ -46,7 +46,7 @@ import {
   updateSitemapFetchJob
 } from '../core/sitemapFetchJobs.js';
 import { getSearchConsoleAccessToken } from '../core/inspectionProvider.js';
-import { dateKey, daysBetween, normalizeUrl, nowIso } from '../core/utils.js';
+import { dateKey, daysBetween, normalizeUrl, nowIso, parseCsv } from '../core/utils.js';
 
 const PORT = Number(process.env.PORT ?? 3000);
 const serverDir = path.dirname(fileURLToPath(import.meta.url));
@@ -2932,14 +2932,20 @@ const server = http.createServer(async (request, response) => {
         return;
       }
       const lines = csvText.split(/\r?\n/).filter((line) => line.trim());
-      const headers = lines[0]?.split(',').map((item) => item.trim().replace(/^"|"$/g, '')) ?? [];
+      const previewRows = parseCsv(csvText);
+      const headers = Object.keys(previewRows[0] ?? {});
+      const normalizedHeaders = headers.map((header) => header.trim().toLowerCase());
       const warnings = [];
-      if (importType === 'gsc' && !headers.includes('url')) warnings.push('GSC CSV should include a url column.');
-      if (importType !== 'gsc' && !headers.includes('path')) warnings.push('P30/signup wide CSV should include a path column.');
+      if (importType === 'gsc' && !normalizedHeaders.some((header) => ['url', 'page', 'landing page', 'landing_page'].includes(header))) {
+        warnings.push('GSC CSV should include a url column.');
+      }
+      if (importType !== 'gsc' && !normalizedHeaders.some((header) => ['path', 'url', 'page', 'landing page', 'landing_page'].includes(header))) {
+        warnings.push('P30/signup wide CSV should include a path or url column.');
+      }
       sendJson(response, 200, {
         ok: true,
         importType,
-        rowCount: Math.max(lines.length - 1, 0),
+        rowCount: previewRows.length,
         headers,
         sampleRows: lines.slice(1, 6),
         warnings
