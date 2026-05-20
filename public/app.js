@@ -47,7 +47,17 @@ async function api(path, options = {}) {
   } finally {
     clearTimeout(timeout);
   }
-  if (!response.ok) throw new Error(await response.text());
+  if (!response.ok) {
+    const text = await response.text();
+    let message = text;
+    try {
+      const json = JSON.parse(text);
+      message = json.error ?? text;
+    } catch {
+      message = text;
+    }
+    throw new Error(`${path}: ${message}`);
+  }
   return response.json();
 }
 
@@ -1262,8 +1272,16 @@ document.querySelector('#import-csv').addEventListener('click', async () => {
   }
   document.querySelector('#import-csv').disabled = true;
   document.querySelector('#cancel-csv-import').disabled = true;
-  setStatus('Importing CSV and recalculating priorities...');
+  setStatus('Checking sitemap fetch status...');
   try {
+    const fetchStatus = await api('/api/actions/fetch-sitemaps/status', { timeoutMs: 10000 });
+    if (fetchStatus.sitemapFetch?.running) {
+      document.querySelector('#import-csv').disabled = false;
+      document.querySelector('#cancel-csv-import').disabled = false;
+      setStatus(`Sitemap fetch is still running since ${fmtDate(fetchStatus.sitemapFetch.startedAt)}. Apply the CSV after it finishes.`);
+      return;
+    }
+    setStatus('Importing CSV and recalculating priorities...');
     const result = await api('/api/settings/csv-import', {
       method: 'POST',
       body: JSON.stringify(state.pendingCsvImport)

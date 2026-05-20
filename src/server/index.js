@@ -412,8 +412,12 @@ function cleanupStateObject(state, options = {}) {
 }
 
 async function readLiteUrlPage(filters) {
-  const cached = await readCachedUrlPage(filters);
-  if (cached) return cached;
+  try {
+    const cached = await readCachedUrlPage(filters);
+    if (cached) return cached;
+  } catch (error) {
+    console.error('Cached URL page failed, falling back to app_state JSONB:', error.message);
+  }
 
   const pool = getLitePool();
   if (!pool) return null;
@@ -465,8 +469,13 @@ async function readLiteUrlPage(filters) {
     params
   );
   const row = result.rows[0] ?? { total: 0, rows: [] };
+  const rows = row.rows ?? [];
+  if (filters.includeSources === 'true') {
+    const sourcesByUrlId = await readLiteSourcesForUrlIds(rows.map((url) => Number(url.id)));
+    for (const url of rows) url.sources = sourcesByUrlId.get(Number(url.id)) ?? [];
+  }
   return {
-    rows: row.rows ?? [],
+    rows,
     total: Number(row.total ?? 0),
     limit,
     offset,
@@ -1230,7 +1239,12 @@ async function handleLiteApi(pathname, parsed, request, response) {
   }
 
   if (pathname === '/api/properties') {
-    sendJson(response, 200, await readCachedProperties());
+    try {
+      sendJson(response, 200, await readCachedProperties());
+    } catch (error) {
+      console.error('Cached properties failed, falling back to app_state JSONB:', error.message);
+      sendJson(response, 200, await readAppStateArray('properties'));
+    }
     return true;
   }
 
@@ -2425,6 +2439,13 @@ const server = http.createServer(async (request, response) => {
         if (handledLite) return;
       } catch (error) {
         console.error('Lite API fallback failed:', error);
+        sendJson(response, 502, {
+          error: `Lite API failed for ${pathname}: ${error.message}`,
+          path: pathname,
+          lite: true,
+          contextLoad: contextLoadInfo
+        });
+        return;
       }
     }
 
@@ -2569,13 +2590,19 @@ const server = http.createServer(async (request, response) => {
       return;
     }
 
+    if (pathname === '/api/actions/fetch-sitemaps/status') {
+      sendJson(response, 200, { ok: true, sitemapFetch: sitemapFetchState });
+      return;
+    }
+
     if (pathname === '/api/actions/fetch-sitemaps' && request.method === 'POST') {
       const body = await readBody(request);
-      const result = await runSitemapFetchAction(body, parsed);
-      sitemapFetchState.lastResult = result;
-      sitemapFetchState.lastError = null;
-      sitemapFetchState.finishedAt = nowIso();
-      sendJson(response, 200, result);
+      const result = await startSitemapFetchAction(body, parsed);
+      sendJson(response, result.alreadyRunning ? 200 : 202, {
+        ok: result.accepted || result.alreadyRunning,
+        message: result.alreadyRunning ? 'Sitemap fetch is already running.' : 'Sitemap fetch started in the background.',
+        sitemapFetch: result.state
+      });
       return;
     }
 
@@ -2604,6 +2631,13 @@ const server = http.createServer(async (request, response) => {
     }
 
     if (pathname === '/api/settings/csv-import' && request.method === 'POST') {
+      if (sitemapFetchState.running) {
+        sendJson(response, 409, {
+          error: 'Sitemap fetch is still running. Wait for it to finish before applying GSC/P30 CSV imports.',
+          sitemapFetch: sitemapFetchState
+        });
+        return;
+      }
       const body = await readBody(request);
       const csvText = String(body.csvText ?? body.csv ?? '').trim();
       const importType = String(body.importType ?? body.type ?? '').trim();
