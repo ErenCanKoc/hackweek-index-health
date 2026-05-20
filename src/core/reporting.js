@@ -50,18 +50,17 @@ export function urlExplorer(store, filters = {}) {
   const offset = Math.max(0, Number(filters.offset || 0) || 0);
   const paginated = filters.limit !== undefined || filters.offset !== undefined;
   const query = String(filters.q ?? '').toLowerCase();
-  const healthByUrlId = new Map(store.state.healthStatuses.map((status) => [status.urlId, status]));
-  const sourcesByUrlId = new Map();
-  for (const source of store.state.urlSources) {
-    if (!sourcesByUrlId.has(source.urlId)) sourcesByUrlId.set(source.urlId, []);
-    sourcesByUrlId.get(source.urlId).push(source);
+  let sourceTextByUrlId = null;
+
+  if (query) {
+    sourceTextByUrlId = new Map();
+    for (const source of store.state.urlSources) {
+      const text = source.sourceSitemapUrl || source.sourceIdentifier;
+      if (!text) continue;
+      sourceTextByUrlId.set(source.urlId, `${sourceTextByUrlId.get(source.urlId) ?? ''} ${text.toLowerCase()}`);
+    }
   }
-  const alertsByUrlId = new Map();
-  for (const alert of store.state.alerts) {
-    if (alert.status !== 'active') continue;
-    if (!alertsByUrlId.has(alert.urlId)) alertsByUrlId.set(alert.urlId, []);
-    alertsByUrlId.get(alert.urlId).push(alert);
-  }
+
   const filtered = store.state.urls
     .filter((url) => {
       if (filters.priorityTier && url.currentPriorityTier !== filters.priorityTier) return false;
@@ -71,16 +70,29 @@ export function urlExplorer(store, filters = {}) {
       if (filters.scaled === 'true' && !url.isScaledContent) return false;
       if (filters.scaled === 'false' && url.isScaledContent) return false;
       if (query) {
-        const sourceText = (sourcesByUrlId.get(url.id) ?? [])
-          .map((source) => source.sourceSitemapUrl || source.sourceIdentifier)
-          .filter(Boolean)
-          .join(' ')
-          .toLowerCase();
+        const sourceText = sourceTextByUrlId.get(url.id) ?? '';
         if (!url.normalizedUrl.toLowerCase().includes(query) && !sourceText.includes(query)) return false;
       }
       return true;
     });
   const page = filtered.slice(offset, offset + limit);
+  const pageIds = new Set(page.map((url) => url.id));
+  const healthByUrlId = new Map();
+  for (const status of store.state.healthStatuses) {
+    if (pageIds.has(status.urlId)) healthByUrlId.set(status.urlId, status);
+  }
+  const sourcesByUrlId = new Map();
+  for (const source of store.state.urlSources) {
+    if (!pageIds.has(source.urlId)) continue;
+    if (!sourcesByUrlId.has(source.urlId)) sourcesByUrlId.set(source.urlId, []);
+    sourcesByUrlId.get(source.urlId).push(source);
+  }
+  const alertsByUrlId = new Map();
+  for (const alert of store.state.alerts) {
+    if (alert.status !== 'active' || !pageIds.has(alert.urlId)) continue;
+    if (!alertsByUrlId.has(alert.urlId)) alertsByUrlId.set(alert.urlId, []);
+    alertsByUrlId.get(alert.urlId).push(alert);
+  }
   const rows = page.map((url) => ({
       ...url,
       health: healthByUrlId.get(url.id) ?? null,
@@ -130,6 +142,7 @@ export function urlDetail(store, id) {
 }
 
 export function scaledDashboard(store) {
+  const tabLimit = 200;
   const scaled = store.state.urls.filter((url) => url.isScaledContent && !url.isManuallyExcluded);
   const today = dateKey();
   const daysToIndex = scaled
@@ -156,11 +169,11 @@ export function scaledDashboard(store) {
 
   return {
     tabs: {
-      adcraft: scaled.filter((url) => url.scaledContentType === 'adcraft'),
-      delayedIndexing: scaled.filter((url) => ['discovered_not_indexed', 'not_indexed'].includes(url.currentIndexState)),
-      indexLost: scaled.filter((url) => ['index_loss_suspected', 'index_lost_confirmed'].includes(url.currentIndexState)),
-      stableIndexed: scaled.filter((url) => url.currentIndexState === 'stable_indexed'),
-      recovered: store.state.alerts.filter((alert) => alert.alertType === 'recovered')
+      adcraft: scaled.filter((url) => url.scaledContentType === 'adcraft').slice(0, tabLimit),
+      delayedIndexing: scaled.filter((url) => ['discovered_not_indexed', 'not_indexed'].includes(url.currentIndexState)).slice(0, tabLimit),
+      indexLost: scaled.filter((url) => ['index_loss_suspected', 'index_lost_confirmed'].includes(url.currentIndexState)).slice(0, tabLimit),
+      stableIndexed: scaled.filter((url) => url.currentIndexState === 'stable_indexed').slice(0, tabLimit),
+      recovered: store.state.alerts.filter((alert) => alert.alertType === 'recovered').slice(-tabLimit).reverse()
     },
     kpis: {
       newScaledUrlsToday: newToday,

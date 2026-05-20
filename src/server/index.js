@@ -1570,7 +1570,7 @@ const server = http.createServer(async (request, response) => {
     }
 
     if (pathname === '/api/alerts') {
-      sendJson(response, 200, context.store.state.alerts.slice().reverse());
+      sendJson(response, 200, context.store.state.alerts.slice(-200).reverse());
       return;
     }
 
@@ -1611,7 +1611,7 @@ const server = http.createServer(async (request, response) => {
     }
 
     if (pathname === '/api/jobs') {
-      sendJson(response, 200, context.store.state.inspectionJobs.slice().reverse().slice(0, 200));
+      sendJson(response, 200, context.store.state.inspectionJobs.slice(-200).reverse());
       return;
     }
 

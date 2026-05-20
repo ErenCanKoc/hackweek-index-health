@@ -220,7 +220,7 @@ function tierOptions(selected) {
 }
 
 async function loadOverview() {
-  const [data, jobs, diagnostics] = await Promise.all([api('/api/overview'), api('/api/jobs'), api('/api/job-diagnostics')]);
+  const data = await api('/api/overview');
   document.querySelector('#kpi-grid').innerHTML = kpis([
     ['Inspected Today', data.inspectedToday],
     ['Quota Used Today', data.quotaUsedToday],
@@ -242,6 +242,18 @@ async function loadOverview() {
       </div>
     `;
   }).join('');
+
+  document.querySelector('#recent-jobs').innerHTML = '<div class="empty-state">Loading queue...</div>';
+  document.querySelector('#queue-diagnostics').innerHTML = '';
+  document.querySelector('#queue-problem-jobs').innerHTML = '<div class="empty-state">Loading diagnostics...</div>';
+  loadOverviewQueue().catch((error) => {
+    document.querySelector('#recent-jobs').innerHTML = `<div class="empty-state">${esc(error.message)}</div>`;
+    document.querySelector('#queue-problem-jobs').innerHTML = '';
+  });
+}
+
+async function loadOverviewQueue() {
+  const [jobs, diagnostics] = await Promise.all([api('/api/jobs'), api('/api/job-diagnostics')]);
 
   document.querySelector('#recent-jobs').innerHTML = table(
     ['URL', 'Tier', 'Reason', 'Status', 'Last Error', 'Updated'],
