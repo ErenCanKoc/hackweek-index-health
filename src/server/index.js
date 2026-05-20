@@ -663,6 +663,34 @@ async function compactPostgresState({ aggressive = false } = {}) {
   }
 }
 
+async function compactPostgresStateIfNeeded() {
+  if (!process.env.DATABASE_URL || process.env.AUTO_COMPACT_ON_CONTEXT_LOAD === 'false') return null;
+  const thresholdBytes = Number(process.env.STATE_AUTO_COMPACT_BYTES ?? 8_000_000);
+  const pool = new pg.Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: false },
+    max: 1
+  });
+  const appStateKey = process.env.APP_STATE_KEY || 'default';
+  try {
+    const result = await pool.query(
+      'SELECT pg_column_size(state)::int AS size_bytes FROM app_state WHERE id = $1',
+      [appStateKey]
+    );
+    const sizeBytes = Number(result.rows[0]?.size_bytes ?? 0);
+    if (sizeBytes <= thresholdBytes) return { compacted: false, sizeBytes, thresholdBytes };
+    const compactResult = await compactPostgresState({
+      aggressive: process.env.AUTO_COMPACT_AGGRESSIVE === 'true'
+    });
+    return { compacted: true, sizeBytes, thresholdBytes, compactResult };
+  } catch (error) {
+    console.error('State auto-compaction skipped:', error.message);
+    return { compacted: false, error: error.message };
+  } finally {
+    await pool.end();
+  }
+}
+
 function openAiStatus() {
   return {
     hasKey: Boolean(process.env.OPENAI_API_KEY),
@@ -825,6 +853,7 @@ async function serveStatic(response, requestPath) {
 }
 
 async function createAppContext() {
+  await compactPostgresStateIfNeeded();
   const context = await createContext();
   context.store.state.deletedUrls ??= [];
   slimImportBatches(context.store);
@@ -1004,6 +1033,40 @@ const server = http.createServer(async (request, response) => {
       } else {
         redirect(response, '/login');
       }
+      return;
+    }
+
+    if (pathname === '/auth/google/start') {
+      const url = await createGoogleAuthUrl(publicOrigin(parsed.origin));
+      response.writeHead(302, { location: url });
+      response.end();
+      return;
+    }
+
+    if (pathname === '/auth/google/callback') {
+      const code = parsed.searchParams.get('code');
+      const state = parsed.searchParams.get('state');
+      if (!code) {
+        sendText(response, 400, 'Google OAuth callback missing code.');
+        return;
+      }
+      const status = await exchangeGoogleCode({ code, state });
+      sendText(response, 200, `
+        <!doctype html>
+        <html>
+          <head><meta charset="utf-8"><title>Google connected</title></head>
+          <body style="font-family: system-ui; padding: 32px;">
+            <h1>Google connected</h1>
+            <p>${status.email ?? 'Account'} is connected. You can close this tab or return to the dashboard.</p>
+            <p><a href="${publicOrigin(parsed.origin)}/#settings">Back to dashboard</a></p>
+          </body>
+        </html>
+      `, 'text/html; charset=utf-8');
+      return;
+    }
+
+    if (!pathname.startsWith('/api/')) {
+      await serveStatic(response, pathname);
       return;
     }
 
@@ -1607,7 +1670,7 @@ const server = http.createServer(async (request, response) => {
       return;
     }
 
-    await serveStatic(response, pathname);
+    sendJson(response, 404, { error: 'Not found' });
   } catch (error) {
     sendJson(response, 500, { error: error.message, stack: error.stack });
   }
