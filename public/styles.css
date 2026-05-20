@@ -806,6 +806,37 @@ td code {
   gap: 12px;
 }
 
+.detail-head-status {
+  display: flex;
+  align-items: flex-start;
+}
+
+.status-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(120px, 1fr));
+  gap: 1px;
+  background: var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.status-card {
+  background: rgba(255, 255, 255, 0.72);
+  padding: 10px 12px;
+}
+
+.status-card span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 5px;
+}
+
+.status-card strong {
+  color: var(--base);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
 .detail-body {
   display: grid;
   grid-template-columns: minmax(280px, 1fr) minmax(280px, 1fr);
@@ -832,6 +863,16 @@ details {
 summary {
   cursor: pointer;
   color: var(--base);
+}
+
+.inline-json {
+  margin: 0;
+  padding: 6px 8px;
+}
+
+.inline-json pre {
+  max-height: 360px;
+  min-width: 420px;
 }
 
 pre {

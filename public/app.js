@@ -123,6 +123,24 @@ function sourceSitemapCell(url) {
     .join('');
 }
 
+function statusCards(detail, latest) {
+  const inspectedDays = [...new Set(detail.inspections.map((item) => item.inspectionDate || String(item.inspectedAt ?? '').slice(0, 10)))];
+  const cards = [
+    ['Current Status', detail.health?.currentHealthStatus ?? detail.url.currentHealthState ?? '-'],
+    ['Severity', detail.health?.currentSeverity ?? '-'],
+    ['Coverage', detail.health?.currentCoverageState ?? latest?.coverageState ?? '-'],
+    ['Last Inspected', fmtDate(detail.url.lastInspectedAt ?? latest?.inspectedAt)],
+    ['Last Crawl', fmtDate(latest?.lastCrawlTime)],
+    ['Inspected Days', inspectedDays.length]
+  ];
+  return cards.map(([label, value]) => `
+    <div class="status-card">
+      <span>${esc(label)}</span>
+      <strong>${esc(value)}</strong>
+    </div>
+  `).join('');
+}
+
 async function deleteUrlIds(ids) {
   if (!ids.length) {
     setStatus('Select at least one URL to delete.');
@@ -343,6 +361,7 @@ async function loadUrls() {
 
 function detailRow(detail) {
   const latest = detail.inspections[0];
+  const latestProperty = latest?.property?.propertyUrl ?? latest?.propertyId ?? '-';
   return `
     <tr class="accordion-row">
       <td colspan="10">
@@ -352,24 +371,53 @@ function detailRow(detail) {
               <h2>${detail.url.normalizedUrl}</h2>
               <p>${detail.url.category} · ${detail.url.locale ?? 'default'} · ${detail.url.currentIndexState}</p>
             </div>
+            <div class="detail-head-status">
+              ${pill(detail.health?.currentSeverity ?? detail.url.currentHealthState ?? 'unknown')}
+            </div>
+          </div>
+          <div class="status-grid">
+            ${statusCards(detail, latest)}
           </div>
           <div class="detail-body">
             <section class="detail-section">
-              <h2>Inspection Timeline</h2>
-              ${table(['When', 'Coverage', 'Property'], detail.inspections.map((item) => `
+              <h2>Inspection Log</h2>
+              ${table(['Date', 'Coverage', 'Verdict', 'Crawl', 'Property', 'JSON'], detail.inspections.map((item, index) => `
                 <tr>
                   <td>${fmtDate(item.inspectedAt)}</td>
-                  <td>${item.coverageState}</td>
+                  <td>${esc(item.coverageState ?? '-')}</td>
+                  <td>${esc(item.verdict ?? '-')}</td>
+                  <td>${fmtDate(item.lastCrawlTime)}</td>
                   <td><code>${esc(item.property?.propertyUrl ?? item.propertyId ?? '-')}</code></td>
+                  <td>
+                    <details class="inline-json">
+                      <summary>View</summary>
+                      <pre>${JSON.stringify(item.rawJson ?? {}, null, 2)}</pre>
+                    </details>
+                  </td>
                 </tr>
               `))}
-              <details>
-                <summary>Raw JSON</summary>
+              <details open>
+                <summary>Latest Raw JSON · ${esc(latestProperty)}</summary>
                 <pre>${latest ? JSON.stringify(latest.rawJson ?? {}, null, 2) : 'No inspection result yet. Run Scheduler or Force GSC Test first.'}</pre>
               </details>
             </section>
             <section class="detail-section">
-              <h2>Diagnosis and Alerts</h2>
+              <h2>Status, Diagnosis and Alerts</h2>
+              ${table(['Field', 'Value'], [
+                ['Index State', detail.url.currentIndexState],
+                ['Health Status', detail.health?.currentHealthStatus ?? detail.url.currentHealthState ?? '-'],
+                ['Severity', detail.health?.currentSeverity ?? '-'],
+                ['Google Canonical', latest?.googleCanonical ?? '-'],
+                ['User Canonical', latest?.userCanonical ?? '-'],
+                ['Page Fetch', latest?.pageFetchState ?? '-'],
+                ['Robots', latest?.robotsTxtState ?? '-'],
+                ['Submitted', latest?.isSubmittedAndIndexed ? 'yes' : 'no']
+              ].map(([label, value]) => `
+                <tr>
+                  <td>${esc(label)}</td>
+                  <td><code>${esc(value)}</code></td>
+                </tr>
+              `))}
               ${table(['Type', 'Severity', 'Status', 'Action'], detail.alerts.map((alert) => `
                 <tr>
                   <td>${alert.alertType}</td>
