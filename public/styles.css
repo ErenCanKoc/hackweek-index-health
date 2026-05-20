@@ -450,6 +450,17 @@ details .button.secondary:hover {
   min-height: auto;
 }
 
+.select-all-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.select-all-control input {
+  min-height: auto;
+}
+
 .table-wrap.slim {
   box-shadow: none;
   max-height: 220px;

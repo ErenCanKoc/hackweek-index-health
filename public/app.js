@@ -271,7 +271,7 @@ async function loadUrls() {
     state.openUrlDetail = await api(`/api/urls/${state.openUrlId}`);
   }
   document.querySelector('#url-table').innerHTML = table(
-    ['Select', 'URL', 'Tier', 'State', 'Health', 'Category', 'Locale', 'Scaled', 'Next Due', 'Actions'],
+    ['<label class="select-all-control"><input id="select-all-urls" type="checkbox"> All</label>', 'URL', 'Tier', 'State', 'Health', 'Category', 'Locale', 'Scaled', 'Next Due', 'Actions'],
     urls.flatMap((url) => [`
       <tr>
         <td><input type="checkbox" data-select-url="${url.id}" ${state.selectedUrlIds.has(Number(url.id)) ? 'checked' : ''}></td>
@@ -298,6 +298,12 @@ async function loadUrls() {
       </tr>
     `, Number(state.openUrlId) === Number(url.id) && state.openUrlDetail ? detailRow(state.openUrlDetail) : ''])
   );
+  const visibleUrlIds = urls.map((url) => Number(url.id));
+  const selectAllUrls = document.querySelector('#select-all-urls');
+  if (selectAllUrls && visibleUrlIds.length) {
+    selectAllUrls.checked = visibleUrlIds.every((id) => state.selectedUrlIds.has(id));
+  }
+  updateSelectedCount();
 }
 
 function detailRow(detail) {
@@ -513,7 +519,7 @@ async function loadSettings() {
     <strong>Manual URL files:</strong> ${(settings.sources.manualUrlFiles ?? []).map(esc).join(', ') || 'none'}
   `;
   document.querySelector('#source-management').innerHTML = table(
-    ['Select', 'Type', 'Source URL'],
+    ['<label class="select-all-control"><input id="select-all-sources" type="checkbox"> All</label>', 'Type', 'Source URL'],
     sourceRows(settings).map((source) => `
       <tr>
         <td><input type="checkbox" data-source-type="${source.type}" data-source-url="${esc(source.url)}"></td>
@@ -523,7 +529,7 @@ async function loadSettings() {
     `)
   );
   document.querySelector('#sitemap-fetch-log').innerHTML = table(
-    ['Select', 'Sitemap', 'Status', 'URLs', 'Skipped', 'Category', 'Locale', 'Scaled', 'Last Success', 'Error'],
+    ['<label class="select-all-control"><input id="select-all-fetched-sitemaps" type="checkbox"> All</label>', 'Sitemap', 'Status', 'URLs', 'Skipped', 'Category', 'Locale', 'Scaled', 'Last Success', 'Error'],
     sitemaps.map((sitemap) => `
       <tr>
         <td><input type="checkbox" data-fetched-sitemap-url="${esc(sitemap.sitemapUrl)}"></td>
@@ -658,6 +664,31 @@ document.addEventListener('click', async (event) => {
 });
 
 document.addEventListener('change', async (event) => {
+  if (event.target.matches('#select-all-urls')) {
+    document.querySelectorAll('[data-select-url]').forEach((item) => {
+      const id = Number(item.dataset.selectUrl);
+      item.checked = event.target.checked;
+      if (event.target.checked) state.selectedUrlIds.add(id);
+      else state.selectedUrlIds.delete(id);
+    });
+    updateSelectedCount();
+    return;
+  }
+
+  if (event.target.matches('#select-all-sources')) {
+    document.querySelectorAll('[data-source-url]').forEach((item) => {
+      item.checked = event.target.checked;
+    });
+    return;
+  }
+
+  if (event.target.matches('#select-all-fetched-sitemaps')) {
+    document.querySelectorAll('[data-fetched-sitemap-url]').forEach((item) => {
+      item.checked = event.target.checked;
+    });
+    return;
+  }
+
   const propertyEditable = event.target.closest('[data-property-field]');
   if (propertyEditable) {
     const id = propertyEditable.dataset.propertyId;
