@@ -1,6 +1,8 @@
-name: CSV import task worker v2
+name: CSV import task worker external v2
 
 on:
+  schedule:
+    - cron: "*/15 * * * *"
   workflow_dispatch:
     inputs:
       job_id:
@@ -12,7 +14,7 @@ on:
         default: "25"
 
 concurrency:
-  group: csv-import-worker
+  group: csv-import-worker-v2
   cancel-in-progress: false
 
 jobs:
