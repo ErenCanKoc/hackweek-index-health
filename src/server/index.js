@@ -1537,7 +1537,8 @@ async function handleLiteApi(pathname, parsed, request, response) {
     }
     const result = await processCsvImportJobTasks(jobId, {
       maxTasks: body.maxTasks ?? parsed.searchParams.get('maxTasks'),
-      maxRuntimeMs: body.maxRuntimeMs ?? parsed.searchParams.get('maxRuntimeMs')
+      maxRuntimeMs: body.maxRuntimeMs ?? parsed.searchParams.get('maxRuntimeMs'),
+      resumeFailed: body.resumeFailed ?? parsed.searchParams.get('resumeFailed') === 'true'
     });
     sendJson(response, 200, { ok: true, jobId: Number(jobId), result });
     return true;
@@ -3139,7 +3140,8 @@ const server = http.createServer(async (request, response) => {
       }
       const result = await processCsvImportJobTasks(jobId, {
         maxTasks: body.maxTasks ?? parsed.searchParams.get('maxTasks'),
-        maxRuntimeMs: body.maxRuntimeMs ?? parsed.searchParams.get('maxRuntimeMs')
+        maxRuntimeMs: body.maxRuntimeMs ?? parsed.searchParams.get('maxRuntimeMs'),
+        resumeFailed: body.resumeFailed ?? parsed.searchParams.get('resumeFailed') === 'true'
       });
       sendJson(response, 200, { ok: true, jobId: Number(jobId), result });
       return;

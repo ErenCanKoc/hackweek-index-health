@@ -11,7 +11,7 @@ on:
       max_tasks:
         description: "Tasks to process in this run"
         required: false
-        default: "25"
+        default: "5"
 
 concurrency:
   group: csv-import-worker-v2
@@ -41,7 +41,7 @@ jobs:
             --header "content-type: application/json" \
             --header "x-cron-secret: $CRON_SECRET" \
             --header "authorization: Bearer $CRON_SECRET" \
-            --data "{\"maxTasks\":${MAX_TASKS:-25},\"maxRuntimeMs\":240000}" \
+            --data "{\"maxTasks\":${MAX_TASKS:-5},\"maxRuntimeMs\":180000,\"resumeFailed\":true}" \
             "$url"
         env:
           APP_BASE_URL: ${{ secrets.APP_BASE_URL }}

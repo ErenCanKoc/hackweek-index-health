@@ -524,6 +524,36 @@ async function csvImportTaskStats(jobId) {
   };
 }
 
+async function requeueFailedCsvImportTasks(jobId) {
+  const pool = getJobPool();
+  if (!pool) return 0;
+  await ensureCsvImportTaskTable();
+  const result = await pool.query(
+    `
+      UPDATE csv_import_tasks
+      SET status = 'queued',
+          error = NULL,
+          started_at = NULL,
+          finished_at = NULL,
+          updated_at = now()
+      WHERE app_state_key = $1
+        AND job_id = $2
+        AND status = 'failed'
+      RETURNING id
+    `,
+    [appStateKey(), Number(jobId)]
+  );
+  return result.rowCount ?? 0;
+}
+
+function isTransientDbConnectionError(error) {
+  const message = String(error?.message ?? error ?? '');
+  return message.includes('EMAXCONNSESSION')
+    || message.includes('max clients reached')
+    || message.includes('too many clients')
+    || message.includes('remaining connection slots');
+}
+
 async function updateChunkedProgress(jobId, phase = 'importing_chunks') {
   const job = await getCsvImportJob(jobId);
   const stats = await csvImportTaskStats(jobId);
@@ -558,6 +588,9 @@ export async function processCsvImportJobTasks(jobId, options = {}) {
   if (job.status === 'completed') return job.result;
   if (job.status === 'failed' && options.resumeFailed !== true) {
     throw new Error(`CSV import job ${jobId} is failed: ${job.error ?? 'unknown error'}`);
+  }
+  if (job.status === 'failed' && options.resumeFailed === true) {
+    await requeueFailedCsvImportTasks(jobId);
   }
 
   const startedAt = job.startedAt ?? nowIso();
@@ -614,6 +647,16 @@ export async function processCsvImportJobTasks(jobId, options = {}) {
       processedTasks += 1;
       await updateChunkedProgress(jobId, 'importing_chunks');
     } catch (error) {
+      if (isTransientDbConnectionError(error)) {
+        await updateCsvImportTask(task.id, {
+          status: 'queued',
+          error: `Transient database connection error; requeued: ${error.message}`,
+          startedAt: null,
+          finishedAt: null
+        });
+        await updateChunkedProgress(jobId, 'waiting_for_database_connections');
+        break;
+      }
       await updateCsvImportTask(task.id, {
         status: 'failed',
         error: error.message,

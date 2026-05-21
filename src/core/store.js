@@ -3,6 +3,8 @@ import path from 'node:path';
 import pg from 'pg';
 import { nowIso } from './utils.js';
 
+let sharedPgPool = null;
+
 const DEFAULT_STATE = {
   meta: { createdAt: null, updatedAt: null },
   counters: {},
@@ -32,7 +34,6 @@ export class Store {
     this.filePath = filePath;
     this.databaseUrl = process.env.DATABASE_URL || null;
     this.appStateKey = process.env.APP_STATE_KEY || 'default';
-    this.pgPool = null;
     this.state = structuredClone(DEFAULT_STATE);
   }
 
@@ -41,14 +42,16 @@ export class Store {
   }
 
   getPool() {
-    if (!this.pgPool) {
-      this.pgPool = new pg.Pool({
+    if (!sharedPgPool) {
+      sharedPgPool = new pg.Pool({
         connectionString: this.databaseUrl,
         ssl: process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: false },
-        max: 3
+        max: Number(process.env.DATABASE_STORE_POOL_MAX ?? 2),
+        connectionTimeoutMillis: Number(process.env.DATABASE_CONNECTION_TIMEOUT_MS ?? 10000),
+        idleTimeoutMillis: 10000
       });
     }
-    return this.pgPool;
+    return sharedPgPool;
   }
 
   async ensureAppStateTable() {
