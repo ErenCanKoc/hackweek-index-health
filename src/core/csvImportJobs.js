@@ -1,8 +1,13 @@
 import pg from 'pg';
-import { ingestBusinessWideCsvText, ingestGscCsvText } from './ingestion.js';
+import {
+  ingestBusinessRows,
+  ingestBusinessWideCsvText,
+  ingestGscCsvText,
+  ingestGscRows
+} from './ingestion.js';
 import { recalculatePriorities } from './priority.js';
 import { Store } from './store.js';
-import { nowIso } from './utils.js';
+import { nowIso, parseCsv } from './utils.js';
 import { refreshDashboardCache } from './dashboardCache.js';
 import { withStateMutationLock } from './jobLocks.js';
 
@@ -109,6 +114,74 @@ export async function ensureCsvImportJobTable() {
   return true;
 }
 
+export async function ensureCsvImportTaskTable() {
+  const pool = getJobPool();
+  if (!pool) return false;
+  await ensureCsvImportJobTable();
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS csv_import_tasks (
+      id BIGSERIAL PRIMARY KEY,
+      app_state_key TEXT NOT NULL,
+      job_id BIGINT NOT NULL REFERENCES csv_import_jobs(id) ON DELETE CASCADE,
+      task_index INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'queued',
+      attempts INTEGER NOT NULL DEFAULT 0,
+      payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+      result JSONB,
+      error TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      started_at TIMESTAMPTZ,
+      finished_at TIMESTAMPTZ,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE (app_state_key, job_id, task_index)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_csv_import_tasks_job_status
+      ON csv_import_tasks (app_state_key, job_id, status, task_index);
+  `);
+  return true;
+}
+
+function chunkRows(rows, chunkSize) {
+  const size = Math.max(1, Number(chunkSize) || 1000);
+  const chunks = [];
+  for (let index = 0; index < rows.length; index += size) {
+    chunks.push(rows.slice(index, index + size));
+  }
+  return chunks;
+}
+
+function taskToObject(row) {
+  if (!row) return null;
+  return {
+    id: Number(row.id),
+    appStateKey: row.app_state_key,
+    jobId: Number(row.job_id),
+    taskIndex: Number(row.task_index),
+    status: row.status,
+    attempts: Number(row.attempts ?? 0),
+    payload: row.payload ?? {},
+    result: row.result ?? null,
+    error: row.error ?? null,
+    createdAt: row.created_at?.toISOString?.() ?? row.created_at,
+    startedAt: row.started_at?.toISOString?.() ?? row.started_at,
+    finishedAt: row.finished_at?.toISOString?.() ?? row.finished_at,
+    updatedAt: row.updated_at?.toISOString?.() ?? row.updated_at
+  };
+}
+
+function queuedProgress({ totalRows = 0, totalTasks = 0, chunkSize = 0 } = {}) {
+  return {
+    ...defaultCsvImportProgress(),
+    phase: 'queued',
+    totalRows,
+    totalTasks,
+    chunkSize,
+    completedTasks: 0,
+    failedTasks: 0
+  };
+}
+
 export async function createCsvImportJob(options = {}, triggerMode = 'local') {
   const pool = getJobPool();
   if (pool) {
@@ -141,6 +214,80 @@ export async function createCsvImportJob(options = {}, triggerMode = 'local') {
   });
   await store.save();
   return job;
+}
+
+export async function createChunkedCsvImportJob(options = {}, triggerMode = 'queued_worker') {
+  const pool = getJobPool();
+  if (!pool) return createCsvImportJob(options, triggerMode);
+
+  const csvText = String(options.csvText ?? options.csv ?? '').trim();
+  const importType = String(options.importType ?? options.type ?? '').trim();
+  if (!csvText) throw new Error('csvText is required');
+  if (!['gsc', 'p30_users', 'signup_count'].includes(importType)) {
+    throw new Error('importType must be gsc, p30_users, or signup_count');
+  }
+
+  const rows = parseCsv(csvText);
+  const chunkSize = Math.max(50, Number(options.chunkSize ?? process.env.CSV_IMPORT_CHUNK_SIZE ?? 1000) || 1000);
+  const chunks = chunkRows(rows, chunkSize);
+  const sourceName = `dashboard:${importType}:${nowIso()}`;
+  const sanitizedOptions = {
+    ...options,
+    csvText: undefined,
+    csv: undefined,
+    importType,
+    sourceName,
+    totalRows: rows.length,
+    totalTasks: chunks.length,
+    chunkSize,
+    chunked: true
+  };
+
+  await ensureCsvImportTaskTable();
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const jobResult = await client.query(
+      `
+        INSERT INTO csv_import_jobs (app_state_key, status, trigger_mode, options, progress)
+        VALUES ($1, 'queued', $2, $3::jsonb, $4::jsonb)
+        RETURNING *
+      `,
+      [
+        appStateKey(),
+        triggerMode,
+        JSON.stringify(sanitizedOptions),
+        JSON.stringify(queuedProgress({ totalRows: rows.length, totalTasks: chunks.length, chunkSize }))
+      ]
+    );
+    const job = toJob(jobResult.rows[0]);
+    for (const [taskIndex, taskRows] of chunks.entries()) {
+      await client.query(
+        `
+          INSERT INTO csv_import_tasks (app_state_key, job_id, task_index, payload)
+          VALUES ($1, $2, $3, $4::jsonb)
+        `,
+        [
+          appStateKey(),
+          job.id,
+          taskIndex,
+          JSON.stringify({
+            rows: taskRows,
+            importType,
+            sourceName,
+            rowOffset: taskIndex * chunkSize
+          })
+        ]
+      );
+    }
+    await client.query('COMMIT');
+    return job;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 export async function updateCsvImportJob(jobId, patch = {}) {
@@ -262,6 +409,315 @@ function createImportBatch(store, payload) {
     createdAt: nowIso(),
     updatedAt: nowIso()
   });
+}
+
+async function claimNextCsvImportTask(jobId) {
+  const pool = getJobPool();
+  if (!pool) return null;
+  await ensureCsvImportTaskTable();
+  const runningTaskTimeout = minutesEnv('CSV_IMPORT_TASK_RUNNING_TIMEOUT_MINUTES', 20);
+  await pool.query(
+    `
+      UPDATE csv_import_tasks
+      SET status = 'queued',
+          error = 'Task heartbeat expired; requeued for retry.',
+          updated_at = now()
+      WHERE app_state_key = $1
+        AND job_id = $2
+        AND status = 'running'
+        AND updated_at < now() - ($3::text || ' minutes')::interval
+    `,
+    [appStateKey(), Number(jobId), String(runningTaskTimeout)]
+  );
+  const result = await pool.query(
+    `
+      WITH next_task AS (
+        SELECT id
+        FROM csv_import_tasks
+        WHERE app_state_key = $1
+          AND job_id = $2
+          AND status = 'queued'
+        ORDER BY task_index
+        FOR UPDATE SKIP LOCKED
+        LIMIT 1
+      )
+      UPDATE csv_import_tasks AS task
+      SET status = 'running',
+          attempts = attempts + 1,
+          started_at = COALESCE(started_at, now()),
+          updated_at = now(),
+          error = NULL
+      FROM next_task
+      WHERE task.id = next_task.id
+      RETURNING task.*
+    `,
+    [appStateKey(), Number(jobId)]
+  );
+  return taskToObject(result.rows[0]);
+}
+
+async function updateCsvImportTask(taskId, patch = {}) {
+  const pool = getJobPool();
+  if (!pool) return null;
+  await ensureCsvImportTaskTable();
+  const existingResult = await pool.query(
+    'SELECT * FROM csv_import_tasks WHERE app_state_key = $1 AND id = $2',
+    [appStateKey(), Number(taskId)]
+  );
+  const existing = taskToObject(existingResult.rows[0]);
+  if (!existing) return null;
+  const next = { ...existing, ...patch };
+  const result = await pool.query(
+    `
+      UPDATE csv_import_tasks
+      SET status = $3,
+          attempts = $4,
+          payload = $5::jsonb,
+          result = $6::jsonb,
+          error = $7,
+          started_at = $8,
+          finished_at = $9,
+          updated_at = now()
+      WHERE app_state_key = $1 AND id = $2
+      RETURNING *
+    `,
+    [
+      appStateKey(),
+      Number(taskId),
+      next.status,
+      next.attempts,
+      JSON.stringify(next.payload ?? {}),
+      next.result ? JSON.stringify(next.result) : null,
+      next.error ?? null,
+      next.startedAt ?? null,
+      next.finishedAt ?? null
+    ]
+  );
+  return taskToObject(result.rows[0]);
+}
+
+async function csvImportTaskStats(jobId) {
+  const pool = getJobPool();
+  if (!pool) return null;
+  await ensureCsvImportTaskTable();
+  const result = await pool.query(
+    `
+      SELECT
+        COUNT(*)::int AS total_tasks,
+        COUNT(*) FILTER (WHERE status = 'completed')::int AS completed_tasks,
+        COUNT(*) FILTER (WHERE status = 'failed')::int AS failed_tasks,
+        COUNT(*) FILTER (WHERE status = 'running')::int AS running_tasks,
+        COALESCE(SUM((result ->> 'importedRows')::int) FILTER (WHERE status = 'completed'), 0)::int AS imported_rows,
+        COALESCE(SUM((result ->> 'urlsAdded')::int) FILTER (WHERE status = 'completed'), 0)::int AS urls_added
+      FROM csv_import_tasks
+      WHERE app_state_key = $1 AND job_id = $2
+    `,
+    [appStateKey(), Number(jobId)]
+  );
+  return {
+    totalTasks: Number(result.rows[0]?.total_tasks ?? 0),
+    completedTasks: Number(result.rows[0]?.completed_tasks ?? 0),
+    failedTasks: Number(result.rows[0]?.failed_tasks ?? 0),
+    runningTasks: Number(result.rows[0]?.running_tasks ?? 0),
+    importedRows: Number(result.rows[0]?.imported_rows ?? 0),
+    urlsAdded: Number(result.rows[0]?.urls_added ?? 0)
+  };
+}
+
+async function updateChunkedProgress(jobId, phase = 'importing_chunks') {
+  const job = await getCsvImportJob(jobId);
+  const stats = await csvImportTaskStats(jobId);
+  if (!job || !stats) return null;
+  const totalTasks = Number(job.options?.totalTasks ?? stats.totalTasks ?? 0);
+  const percent = totalTasks
+    ? Math.min(59, Math.round((stats.completedTasks / totalTasks) * 55) + 5)
+    : 5;
+  return updateCsvImportJob(jobId, {
+    status: 'running',
+    progress: {
+      ...(job.progress ?? defaultCsvImportProgress()),
+      phase,
+      percent,
+      importedRows: stats.importedRows,
+      urlsAdded: stats.urlsAdded,
+      totalTasks,
+      completedTasks: stats.completedTasks,
+      failedTasks: stats.failedTasks,
+      updatedAt: nowIso()
+    }
+  });
+}
+
+export async function processCsvImportJobTasks(jobId, options = {}) {
+  const pool = getJobPool();
+  if (!pool) return executeCsvImportJob(jobId, options);
+  await ensureCsvImportTaskTable();
+
+  let job = await getCsvImportJob(jobId);
+  if (!job) throw new Error(`CSV import job ${jobId} not found.`);
+  if (job.status === 'completed') return job.result;
+  if (job.status === 'failed' && options.resumeFailed !== true) {
+    throw new Error(`CSV import job ${jobId} is failed: ${job.error ?? 'unknown error'}`);
+  }
+
+  const startedAt = job.startedAt ?? nowIso();
+  job = await updateCsvImportJob(jobId, {
+    status: 'running',
+    startedAt,
+    error: null,
+    progress: {
+      ...(job.progress ?? defaultCsvImportProgress()),
+      phase: 'importing_chunks',
+      updatedAt: nowIso()
+    }
+  });
+
+  const maxTasks = Math.max(1, Number(options.maxTasks ?? process.env.CSV_IMPORT_WORKER_MAX_TASKS ?? 25) || 25);
+  const maxRuntimeMs = Math.max(10000, Number(options.maxRuntimeMs ?? process.env.CSV_IMPORT_WORKER_MAX_RUNTIME_MS ?? 240000) || 240000);
+  const started = Date.now();
+  let processedTasks = 0;
+
+  while (processedTasks < maxTasks && Date.now() - started < maxRuntimeMs) {
+    const task = await claimNextCsvImportTask(jobId);
+    if (!task) break;
+
+    try {
+      const taskResult = await withStateMutationLock('csv_import_task', async () => {
+        const store = options.store ?? await new Store().load();
+        const beforeUrls = store.state.urls.length;
+        const rows = Array.isArray(task.payload?.rows) ? task.payload.rows : [];
+        const importType = String(task.payload?.importType ?? job.options?.importType ?? '').trim();
+        const sourceName = String(task.payload?.sourceName ?? job.options?.sourceName ?? `dashboard:${importType}`);
+        const importedRows = importType === 'gsc'
+          ? ingestGscRows(store, rows, sourceName)
+          : ingestBusinessRows(store, rows, importType, sourceName);
+        await store.save();
+        if (typeof options.afterStateSave === 'function') await options.afterStateSave();
+        return {
+          importedRows,
+          urlsBefore: beforeUrls,
+          urlsAfter: store.state.urls.length,
+          urlsAdded: store.state.urls.length - beforeUrls
+        };
+      }, {
+        onWait: async () => {
+          await updateCsvImportTask(task.id, { status: 'running' });
+          await updateChunkedProgress(jobId, 'waiting_for_state_lock');
+        }
+      });
+
+      await updateCsvImportTask(task.id, {
+        status: 'completed',
+        result: taskResult,
+        finishedAt: nowIso()
+      });
+      processedTasks += 1;
+      await updateChunkedProgress(jobId, 'importing_chunks');
+    } catch (error) {
+      await updateCsvImportTask(task.id, {
+        status: 'failed',
+        error: error.message,
+        finishedAt: nowIso()
+      });
+      const currentJob = await getCsvImportJob(jobId);
+      await updateCsvImportJob(jobId, {
+        status: 'failed',
+        finishedAt: nowIso(),
+        error: `CSV task ${task.taskIndex} failed: ${error.message}`,
+        progress: {
+          ...(currentJob?.progress ?? defaultCsvImportProgress()),
+          phase: 'failed',
+          updatedAt: nowIso()
+        }
+      });
+      throw error;
+    }
+  }
+
+  const stats = await csvImportTaskStats(jobId);
+  job = await getCsvImportJob(jobId);
+  const totalTasks = Number(job?.options?.totalTasks ?? stats?.totalTasks ?? 0);
+  if (stats && totalTasks && stats.completedTasks < totalTasks) {
+    return {
+      ok: true,
+      partial: true,
+      processedTasks,
+      stats
+    };
+  }
+
+  const currentJob = await updateCsvImportJob(jobId, {
+    progress: {
+      ...(job?.progress ?? defaultCsvImportProgress()),
+      phase: 'recalculating_priorities',
+      percent: 70,
+      updatedAt: nowIso()
+    }
+  });
+  let thresholds = null;
+  if (currentJob?.options?.recalculatePriorities !== false && currentJob?.progress?.priorityRecalculated !== true) {
+    thresholds = await withStateMutationLock('csv_import_recalculate', async () => {
+      const store = options.store ?? await new Store().load();
+      const value = recalculatePriorities(store);
+      createImportBatch(store, {
+        importType: currentJob.options?.importType,
+        sourceName: currentJob.options?.sourceName,
+        importedRows: stats.importedRows,
+        urlsBefore: null,
+        urlsAfter: store.state.urls.length,
+        urlsAdded: stats.urlsAdded,
+        createdUrlIds: [],
+        touchedGscMetricCount: currentJob.options?.importType === 'gsc' ? stats.importedRows : 0,
+        touchedBusinessMetricCount: currentJob.options?.importType === 'gsc' ? 0 : stats.importedRows
+      });
+      await store.save();
+      if (typeof options.afterStateSave === 'function') await options.afterStateSave();
+      return value;
+    }, {
+      onWait: async () => updateChunkedProgress(jobId, 'waiting_for_state_lock')
+    });
+  }
+
+  await updateCsvImportJob(jobId, {
+    progress: {
+      ...(currentJob?.progress ?? defaultCsvImportProgress()),
+      phase: 'syncing_cache',
+      percent: 90,
+      importedRows: stats?.importedRows ?? 0,
+      urlsAdded: stats?.urlsAdded ?? 0,
+      completedTasks: stats?.completedTasks ?? 0,
+      totalTasks,
+      priorityRecalculated: true,
+      updatedAt: nowIso()
+    }
+  });
+  const cache = currentJob?.options?.syncDashboardCache === false ? null : await refreshDashboardCache();
+  const result = {
+    ok: true,
+    chunked: true,
+    importType: currentJob?.options?.importType,
+    importedRows: stats?.importedRows ?? 0,
+    urlsAdded: stats?.urlsAdded ?? 0,
+    totalTasks,
+    thresholds,
+    cache
+  };
+  await updateCsvImportJob(jobId, {
+    status: 'completed',
+    finishedAt: nowIso(),
+    result,
+    progress: {
+      ...(currentJob?.progress ?? defaultCsvImportProgress()),
+      phase: 'complete',
+      percent: 100,
+      importedRows: result.importedRows,
+      urlsAdded: result.urlsAdded,
+      completedTasks: totalTasks,
+      totalTasks,
+      updatedAt: nowIso()
+    }
+  });
+  return result;
 }
 
 export async function executeCsvImportJob(jobId, options = {}) {

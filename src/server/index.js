@@ -46,11 +46,13 @@ import {
   updateSitemapFetchJob
 } from '../core/sitemapFetchJobs.js';
 import {
+  createChunkedCsvImportJob,
   createCsvImportJob,
   executeCsvImportJob,
   getCsvImportJob,
   hasActiveCsvImportJob,
   listCsvImportJobs,
+  processCsvImportJobTasks,
   recoverStaleCsvImportJobs,
   updateCsvImportJob
 } from '../core/csvImportJobs.js';
@@ -1502,6 +1504,25 @@ async function handleLiteApi(pathname, parsed, request, response) {
     return true;
   }
 
+  if (pathname === '/api/actions/csv-import/process' && request.method === 'POST') {
+    if (!isCronAuthorized(parsed, request)) {
+      sendJson(response, 401, { error: 'Unauthorized' });
+      return true;
+    }
+    const body = await readBody(request);
+    const jobId = body.jobId ?? parsed.searchParams.get('jobId') ?? (await listCsvImportJobs(1))[0]?.id;
+    if (!jobId) {
+      sendJson(response, 404, { error: 'No CSV import job found.' });
+      return true;
+    }
+    const result = await processCsvImportJobTasks(jobId, {
+      maxTasks: body.maxTasks ?? parsed.searchParams.get('maxTasks'),
+      maxRuntimeMs: body.maxRuntimeMs ?? parsed.searchParams.get('maxRuntimeMs')
+    });
+    sendJson(response, 200, { ok: true, jobId: Number(jobId), result });
+    return true;
+  }
+
   if (pathname === '/api/settings/csv-import' && request.method === 'POST') {
     const activeCsvImport = await hasActiveCsvImportJob();
     if (activeCsvImport) {
@@ -2585,7 +2606,7 @@ async function triggerRenderOneOffSitemapJob(jobId) {
 async function triggerRenderOneOffCsvImportJob(jobId) {
   const { apiKey, serviceId } = renderOneOffConfig();
   if (!apiKey || !serviceId) return null;
-  const startCommand = `node scripts/run-csv-import-job.mjs ${Number(jobId)}`;
+  const startCommand = `node scripts/run-csv-import-tasks.mjs ${Number(jobId)}`;
   const response = await fetch(`https://api.render.com/v1/services/${encodeURIComponent(serviceId)}/jobs`, {
     method: 'POST',
     headers: {
@@ -2610,7 +2631,8 @@ async function triggerRenderOneOffCsvImportJob(jobId) {
 
 async function startCsvImportAction(options = {}) {
   const preferredMode = renderOneOffConfig().apiKey && renderOneOffConfig().serviceId ? 'render_one_off' : 'local';
-  let job = await createCsvImportJob(options, preferredMode);
+  const createJob = process.env.DATABASE_URL ? createChunkedCsvImportJob : createCsvImportJob;
+  let job = await createJob(options, preferredMode);
   if (preferredMode === 'render_one_off') {
     try {
       const renderJob = await triggerRenderOneOffCsvImportJob(job.id);
@@ -2625,7 +2647,8 @@ async function startCsvImportAction(options = {}) {
     }
   }
 
-  executeCsvImportJob(job.id, {
+  const runner = process.env.DATABASE_URL ? processCsvImportJobTasks : executeCsvImportJob;
+  runner(job.id, {
     store: process.env.DATABASE_URL ? context?.store : undefined,
     afterStateSave: async () => {
       if (context?.store) await context.store.load();
@@ -3076,6 +3099,25 @@ const server = http.createServer(async (request, response) => {
       const jobId = parsed.searchParams.get('jobId');
       const job = jobId ? await getCsvImportJob(jobId) : (await listCsvImportJobs(1))[0] ?? null;
       sendJson(response, 200, { ok: true, job });
+      return;
+    }
+
+    if (pathname === '/api/actions/csv-import/process' && request.method === 'POST') {
+      if (!isCronAuthorized(parsed, request)) {
+        sendJson(response, 401, { error: 'Unauthorized' });
+        return;
+      }
+      const body = await readBody(request);
+      const jobId = body.jobId ?? parsed.searchParams.get('jobId') ?? (await listCsvImportJobs(1))[0]?.id;
+      if (!jobId) {
+        sendJson(response, 404, { error: 'No CSV import job found.' });
+        return;
+      }
+      const result = await processCsvImportJobTasks(jobId, {
+        maxTasks: body.maxTasks ?? parsed.searchParams.get('maxTasks'),
+        maxRuntimeMs: body.maxRuntimeMs ?? parsed.searchParams.get('maxRuntimeMs')
+      });
+      sendJson(response, 200, { ok: true, jobId: Number(jobId), result });
       return;
     }
 

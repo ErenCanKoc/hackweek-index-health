@@ -1,0 +1,40 @@
+name: CSV import task worker
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: "Optional CSV import job id"
+        required: false
+      max_tasks:
+        description: "Tasks to process in this run"
+        required: false
+        default: "25"
+
+concurrency:
+  group: csv-import-worker
+  cancel-in-progress: false
+
+jobs:
+  process-csv-import-tasks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Process queued CSV import tasks
+        run: |
+          url="${APP_BASE_URL%/}/api/actions/csv-import/process"
+          if [ -n "$JOB_ID" ]; then
+            url="$url?jobId=$JOB_ID"
+          fi
+          curl --fail --show-error --silent \
+            --request POST \
+            --header "content-type: application/json" \
+            --header "x-cron-secret: $CRON_SECRET" \
+            --data "{\"maxTasks\":${MAX_TASKS:-25},\"maxRuntimeMs\":240000}" \
+            "$url"
+        env:
+          APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          JOB_ID: ${{ github.event.inputs.job_id }}
+          MAX_TASKS: ${{ github.event.inputs.max_tasks || '25' }}

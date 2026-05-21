@@ -426,6 +426,10 @@ export async function ingestGscCsv(store, filePath) {
 
 export function ingestGscCsvText(store, text, sourceName = 'dashboard') {
   const rows = parseCsv(text);
+  return ingestGscRows(store, rows, sourceName);
+}
+
+export function ingestGscRows(store, rows, sourceName = 'dashboard') {
   const now = nowIso();
   let count = 0;
   const latestByUrl = new Map();
@@ -486,6 +490,10 @@ export async function ingestBusinessWideCsv(store, filePath, metricType) {
 
 export function ingestBusinessWideCsvText(store, text, metricType, sourceName = 'dashboard') {
   const rows = parseCsv(text);
+  return ingestBusinessRows(store, rows, metricType, sourceName);
+}
+
+export function ingestBusinessRows(store, rows, metricType, sourceName = 'dashboard') {
   const now = nowIso();
   let count = 0;
 
