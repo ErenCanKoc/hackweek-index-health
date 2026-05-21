@@ -1,18 +1,25 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { processCsvImportJobTasks } from '../src/core/csvImportJobs.js';
+import { listCsvImportJobs, processCsvImportJobTasks } from '../src/core/csvImportJobs.js';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 process.chdir(projectRoot);
 
-const jobId = Number(process.argv.find((arg) => /^\d+$/.test(arg)) ?? process.env.CSV_IMPORT_JOB_ID);
+async function resolveJobId() {
+  const supplied = Number(process.argv.find((arg) => /^\d+$/.test(arg)) ?? process.env.CSV_IMPORT_JOB_ID);
+  if (Number.isInteger(supplied) && supplied > 0) return supplied;
 
-if (!Number.isInteger(jobId) || jobId <= 0) {
+  const jobs = await listCsvImportJobs(10);
+  const activeJob = jobs.find((job) => ['queued', 'running', 'failed'].includes(job.status));
+  if (activeJob) return Number(activeJob.id);
+
   console.error('Usage: node scripts/run-csv-import-tasks.mjs <jobId>');
+  console.error('No queued, running, or failed CSV import job was found.');
   process.exit(1);
 }
 
 try {
+  const jobId = await resolveJobId();
   const result = await processCsvImportJobTasks(jobId, {
     maxTasks: process.env.CSV_IMPORT_WORKER_MAX_TASKS,
     maxRuntimeMs: process.env.CSV_IMPORT_WORKER_MAX_RUNTIME_MS,

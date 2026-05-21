@@ -19,30 +19,30 @@ jobs:
   process-csv-import-tasks:
     runs-on: ubuntu-latest
     steps:
-      - name: Process queued CSV import tasks
+      - name: Start Render CSV import worker job
         run: |
-          if [ -z "$APP_BASE_URL" ]; then
-            echo "::error::APP_BASE_URL secret is empty or unavailable to this workflow."
+          if [ -z "$RENDER_API_KEY" ]; then
+            echo "::error::RENDER_API_KEY secret is empty or unavailable to this workflow."
             exit 1
           fi
-          if [ -z "$CRON_SECRET" ]; then
-            echo "::error::CRON_SECRET secret is empty or unavailable to this workflow."
+          if [ -z "$RENDER_SERVICE_ID" ]; then
+            echo "::error::RENDER_SERVICE_ID secret is empty or unavailable to this workflow."
             exit 1
           fi
-          url="${APP_BASE_URL%/}/api/actions/csv-import/process"
+          command="CSV_IMPORT_WORKER_MAX_TASKS=${MAX_TASKS:-25} CSV_IMPORT_WORKER_MAX_RUNTIME_MS=900000 CSV_IMPORT_RESUME_FAILED=true node scripts/run-csv-import-tasks.mjs"
           if [ -n "$JOB_ID" ]; then
-            url="$url?jobId=$JOB_ID"
+            command="$command $JOB_ID"
           fi
-          echo "Calling CSV import worker endpoint with CRON_SECRET length ${#CRON_SECRET}."
-          curl --fail-with-body --show-error --silent \
+          echo "Starting Render one-off CSV import worker job."
+          payload=$(jq -n --arg command "$command" '{startCommand: $command}')
+          curl --fail --show-error --silent \
             --request POST \
+            --header "authorization: Bearer $RENDER_API_KEY" \
             --header "content-type: application/json" \
-            --header "x-cron-secret: $CRON_SECRET" \
-            --header "authorization: Bearer $CRON_SECRET" \
-            --data "{\"maxTasks\":${MAX_TASKS:-25},\"maxRuntimeMs\":240000}" \
-            "$url"
+            --data "$payload" \
+            "https://api.render.com/v1/services/$RENDER_SERVICE_ID/jobs"
         env:
-          APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
-          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
           JOB_ID: ${{ github.event.inputs.job_id }}
           MAX_TASKS: ${{ github.event.inputs.max_tasks }}

@@ -106,6 +106,30 @@ function cronUnauthorizedPayload(parsed, request, error = 'Unauthorized') {
   };
 }
 
+function numberOption(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function csvImportHttpWorkerOptions(body, parsed) {
+  const maxRuntimeCapMs = numberOption(process.env.CSV_IMPORT_HTTP_MAX_RUNTIME_CAP_MS, 25000);
+  const defaultMaxRuntimeMs = Math.min(
+    maxRuntimeCapMs,
+    numberOption(process.env.CSV_IMPORT_HTTP_MAX_RUNTIME_MS, 20000)
+  );
+  const requestedMaxRuntimeMs = numberOption(body.maxRuntimeMs ?? parsed.searchParams.get('maxRuntimeMs'), defaultMaxRuntimeMs);
+
+  return {
+    maxTasks: numberOption(body.maxTasks ?? parsed.searchParams.get('maxTasks'), 1),
+    maxRuntimeMs: Math.min(maxRuntimeCapMs, requestedMaxRuntimeMs),
+    lockMaxWaitMs: Math.min(
+      numberOption(process.env.CSV_IMPORT_HTTP_LOCK_MAX_WAIT_CAP_MS, 15000),
+      numberOption(body.lockMaxWaitMs ?? parsed.searchParams.get('lockMaxWaitMs'), 10000)
+    ),
+    resumeFailed: body.resumeFailed ?? parsed.searchParams.get('resumeFailed') === 'true'
+  };
+}
+
 function isCronAuthBypassRoute(pathname, parsed, request) {
   return pathname === '/api/actions/csv-import/process'
     && request.method === 'POST'
@@ -1535,11 +1559,7 @@ async function handleLiteApi(pathname, parsed, request, response) {
       sendJson(response, 404, { error: 'No CSV import job found.' });
       return true;
     }
-    const result = await processCsvImportJobTasks(jobId, {
-      maxTasks: body.maxTasks ?? parsed.searchParams.get('maxTasks'),
-      maxRuntimeMs: body.maxRuntimeMs ?? parsed.searchParams.get('maxRuntimeMs'),
-      resumeFailed: body.resumeFailed ?? parsed.searchParams.get('resumeFailed') === 'true'
-    });
+    const result = await processCsvImportJobTasks(jobId, csvImportHttpWorkerOptions(body, parsed));
     sendJson(response, 200, { ok: true, jobId: Number(jobId), result });
     return true;
   }
@@ -3138,11 +3158,7 @@ const server = http.createServer(async (request, response) => {
         sendJson(response, 404, { error: 'No CSV import job found.' });
         return;
       }
-      const result = await processCsvImportJobTasks(jobId, {
-        maxTasks: body.maxTasks ?? parsed.searchParams.get('maxTasks'),
-        maxRuntimeMs: body.maxRuntimeMs ?? parsed.searchParams.get('maxRuntimeMs'),
-        resumeFailed: body.resumeFailed ?? parsed.searchParams.get('resumeFailed') === 'true'
-      });
+      const result = await processCsvImportJobTasks(jobId, csvImportHttpWorkerOptions(body, parsed));
       sendJson(response, 200, { ok: true, jobId: Number(jobId), result });
       return;
     }
