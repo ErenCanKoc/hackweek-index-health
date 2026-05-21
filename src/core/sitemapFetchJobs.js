@@ -442,5 +442,26 @@ export async function executeSitemapFetchJob(jobId, options = {}) {
     });
     throw error;
   }
+  }, {
+    onWait: async () => {
+      const currentJob = await getSitemapFetchJob(jobId);
+      await updateSitemapFetchJob(jobId, {
+        progress: {
+          ...(currentJob?.progress ?? defaultSitemapFetchProgress()),
+          phase: 'waiting_for_state_lock',
+          updatedAt: nowIso()
+        }
+      });
+    },
+    onAcquired: async () => {
+      const currentJob = await getSitemapFetchJob(jobId);
+      await updateSitemapFetchJob(jobId, {
+        progress: {
+          ...(currentJob?.progress ?? defaultSitemapFetchProgress()),
+          phase: 'starting',
+          updatedAt: nowIso()
+        }
+      });
+    }
   });
 }

@@ -377,5 +377,26 @@ export async function executeCsvImportJob(jobId, options = {}) {
     });
     throw error;
   }
+  }, {
+    onWait: async () => {
+      const currentJob = await getCsvImportJob(jobId);
+      await updateCsvImportJob(jobId, {
+        progress: {
+          ...(currentJob?.progress ?? defaultCsvImportProgress()),
+          phase: 'waiting_for_state_lock',
+          updatedAt: nowIso()
+        }
+      });
+    },
+    onAcquired: async () => {
+      const currentJob = await getCsvImportJob(jobId);
+      await updateCsvImportJob(jobId, {
+        progress: {
+          ...(currentJob?.progress ?? defaultCsvImportProgress()),
+          phase: 'importing',
+          updatedAt: nowIso()
+        }
+      });
+    }
   });
 }

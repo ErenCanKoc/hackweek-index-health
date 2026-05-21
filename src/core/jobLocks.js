@@ -20,14 +20,33 @@ function appStateKey() {
   return process.env.APP_STATE_KEY || 'default';
 }
 
-export async function withStateMutationLock(taskName, task) {
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export async function withStateMutationLock(taskName, task, options = {}) {
   const pool = getPool();
   if (!pool) return task();
 
   const client = await pool.connect();
   const lockScope = `${appStateKey()}:state_mutation`;
+  const waitIntervalMs = Math.max(1000, Number(options.waitIntervalMs ?? 15000));
+  const lockLabel = taskName || 'state_mutation';
   try {
-    await client.query('SELECT pg_advisory_lock(hashtext($1), hashtext($2))', [lockScope, 'exclusive']);
+    for (;;) {
+      const result = await client.query(
+        'SELECT pg_try_advisory_lock(hashtext($1), hashtext($2)) AS acquired',
+        [lockScope, 'exclusive']
+      );
+      if (result.rows[0]?.acquired) break;
+      if (typeof options.onWait === 'function') {
+        await options.onWait({ taskName: lockLabel, waitedAt: new Date().toISOString() });
+      }
+      await sleep(waitIntervalMs);
+    }
+    if (typeof options.onAcquired === 'function') {
+      await options.onAcquired({ taskName: lockLabel, acquiredAt: new Date().toISOString() });
+    }
     return await task();
   } finally {
     try {
