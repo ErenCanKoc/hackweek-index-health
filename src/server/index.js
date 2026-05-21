@@ -106,6 +106,12 @@ function cronUnauthorizedPayload(parsed, request, error = 'Unauthorized') {
   };
 }
 
+function isCronAuthBypassRoute(pathname, parsed, request) {
+  return pathname === '/api/actions/csv-import/process'
+    && request.method === 'POST'
+    && isCronAuthorized(parsed, request);
+}
+
 function isRecoveryAuthorized(parsed, request) {
   const expected = recoverySecret();
   if (!expected) return false;
@@ -2879,9 +2885,13 @@ const server = http.createServer(async (request, response) => {
       return;
     }
 
-    if (!isAuthenticated(request)) {
+    if (!isAuthenticated(request) && !isCronAuthBypassRoute(pathname, parsed, request)) {
       if (pathname.startsWith('/api/')) {
-        sendJson(response, 401, { error: 'Authentication required' });
+        if (pathname === '/api/actions/csv-import/process' && request.method === 'POST') {
+          sendJson(response, 401, cronUnauthorizedPayload(parsed, request));
+        } else {
+          sendJson(response, 401, { error: 'Authentication required' });
+        }
       } else {
         redirect(response, '/login');
       }
