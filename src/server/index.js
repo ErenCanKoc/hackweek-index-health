@@ -88,8 +88,22 @@ function recoverySecret() {
 function isCronAuthorized(parsed, request) {
   const expected = cronSecret();
   if (!expected) return false;
-  const supplied = request.headers['x-cron-secret'] || parsed.searchParams.get('secret');
+  const authorization = String(request.headers.authorization ?? '');
+  const bearer = authorization.toLowerCase().startsWith('bearer ') ? authorization.slice(7) : '';
+  const supplied = request.headers['x-cron-secret'] || bearer || parsed.searchParams.get('secret');
   return safeEqual(String(supplied ?? ''), expected);
+}
+
+function cronUnauthorizedPayload(parsed, request, error = 'Unauthorized') {
+  const authorization = String(request.headers.authorization ?? '');
+  const bearer = authorization.toLowerCase().startsWith('bearer ') ? authorization.slice(7) : '';
+  const supplied = request.headers['x-cron-secret'] || bearer || parsed.searchParams.get('secret');
+  return {
+    error,
+    cronSecretConfigured: cronSecret().length > 0,
+    suppliedCronSecret: String(supplied ?? '').length > 0,
+    suppliedLength: String(supplied ?? '').length
+  };
 }
 
 function isRecoveryAuthorized(parsed, request) {
@@ -1506,7 +1520,7 @@ async function handleLiteApi(pathname, parsed, request, response) {
 
   if (pathname === '/api/actions/csv-import/process' && request.method === 'POST') {
     if (!isCronAuthorized(parsed, request)) {
-      sendJson(response, 401, { error: 'Unauthorized' });
+      sendJson(response, 401, cronUnauthorizedPayload(parsed, request));
       return true;
     }
     const body = await readBody(request);
@@ -2798,7 +2812,7 @@ const server = http.createServer(async (request, response) => {
 
     if (pathname === '/api/cron/daily' && request.method === 'POST') {
       if (!isCronAuthorized(parsed, request)) {
-        sendJson(response, 401, { error: 'Invalid or missing cron secret' });
+        sendJson(response, 401, cronUnauthorizedPayload(parsed, request, 'Invalid or missing cron secret'));
         return;
       }
       await ensureContextReady();
@@ -3104,7 +3118,7 @@ const server = http.createServer(async (request, response) => {
 
     if (pathname === '/api/actions/csv-import/process' && request.method === 'POST') {
       if (!isCronAuthorized(parsed, request)) {
-        sendJson(response, 401, { error: 'Unauthorized' });
+        sendJson(response, 401, cronUnauthorizedPayload(parsed, request));
         return;
       }
       const body = await readBody(request);

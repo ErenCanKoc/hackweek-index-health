@@ -23,14 +23,24 @@ jobs:
     steps:
       - name: Process queued CSV import tasks
         run: |
+          if [ -z "$APP_BASE_URL" ]; then
+            echo "::error::APP_BASE_URL secret is empty or unavailable to this workflow."
+            exit 1
+          fi
+          if [ -z "$CRON_SECRET" ]; then
+            echo "::error::CRON_SECRET secret is empty or unavailable to this workflow."
+            exit 1
+          fi
           url="${APP_BASE_URL%/}/api/actions/csv-import/process"
           if [ -n "$JOB_ID" ]; then
             url="$url?jobId=$JOB_ID"
           fi
-          curl --fail --show-error --silent \
+          echo "Calling CSV import worker endpoint with CRON_SECRET length ${#CRON_SECRET}."
+          curl --fail-with-body --show-error --silent \
             --request POST \
             --header "content-type: application/json" \
             --header "x-cron-secret: $CRON_SECRET" \
+            --header "authorization: Bearer $CRON_SECRET" \
             --data "{\"maxTasks\":${MAX_TASKS:-25},\"maxRuntimeMs\":240000}" \
             "$url"
         env:
