@@ -51,6 +51,7 @@ import {
   getCsvImportJob,
   hasActiveCsvImportJob,
   listCsvImportJobs,
+  recoverStaleCsvImportJobs,
   updateCsvImportJob
 } from '../core/csvImportJobs.js';
 import { getSearchConsoleAccessToken } from '../core/inspectionProvider.js';
@@ -1484,11 +1485,17 @@ async function handleLiteApi(pathname, parsed, request, response) {
   }
 
   if (pathname === '/api/csv-import-jobs') {
+    await recoverStaleCsvImportJobs().catch((error) => {
+      console.error('Failed to recover stale CSV import jobs:', error.message);
+    });
     sendJson(response, 200, { ok: true, jobs: await listCsvImportJobs(Number(parsed.searchParams.get('limit') ?? 10)) });
     return true;
   }
 
   if (pathname === '/api/actions/csv-import/status') {
+    await recoverStaleCsvImportJobs().catch((error) => {
+      console.error('Failed to recover stale CSV import jobs:', error.message);
+    });
     const jobId = parsed.searchParams.get('jobId');
     const job = jobId ? await getCsvImportJob(jobId) : (await listCsvImportJobs(1))[0] ?? null;
     sendJson(response, 200, { ok: true, job });
@@ -3055,11 +3062,17 @@ const server = http.createServer(async (request, response) => {
     }
 
     if (pathname === '/api/csv-import-jobs') {
+      await recoverStaleCsvImportJobs().catch((error) => {
+        console.error('Failed to recover stale CSV import jobs:', error.message);
+      });
       sendJson(response, 200, { ok: true, jobs: await listCsvImportJobs(Number(parsed.searchParams.get('limit') ?? 10)) });
       return;
     }
 
     if (pathname === '/api/actions/csv-import/status') {
+      await recoverStaleCsvImportJobs().catch((error) => {
+        console.error('Failed to recover stale CSV import jobs:', error.message);
+      });
       const jobId = parsed.searchParams.get('jobId');
       const job = jobId ? await getCsvImportJob(jobId) : (await listCsvImportJobs(1))[0] ?? null;
       sendJson(response, 200, { ok: true, job });

@@ -26,6 +26,32 @@ function appStateKey() {
   return process.env.APP_STATE_KEY || 'default';
 }
 
+function minutesEnv(name, fallback) {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function jobTimestamp(job) {
+  return job?.updatedAt ?? job?.startedAt ?? job?.createdAt ?? null;
+}
+
+function staleReason(job, now = Date.now()) {
+  if (!['queued', 'running'].includes(job?.status)) return null;
+  const timestamp = Date.parse(jobTimestamp(job));
+  if (!Number.isFinite(timestamp)) return null;
+  const ageMinutes = (now - timestamp) / 60000;
+  const queuedTimeout = minutesEnv('CSV_IMPORT_QUEUED_TIMEOUT_MINUTES', 30);
+  const runningTimeout = minutesEnv('CSV_IMPORT_RUNNING_TIMEOUT_MINUTES', 120);
+
+  if (job.status === 'queued' && ageMinutes > queuedTimeout) {
+    return `Queued CSV import job exceeded ${queuedTimeout} minutes.`;
+  }
+  if (job.status === 'running' && ageMinutes > runningTimeout) {
+    return `Running CSV import job exceeded ${runningTimeout} minutes.`;
+  }
+  return null;
+}
+
 export function defaultCsvImportProgress() {
   return {
     phase: 'queued',
@@ -202,8 +228,31 @@ export async function listCsvImportJobs(limit = 10) {
 }
 
 export async function hasActiveCsvImportJob() {
+  await recoverStaleCsvImportJobs().catch((error) => {
+    console.error('Failed to recover stale CSV import jobs:', error.message);
+  });
   const jobs = await listCsvImportJobs(5);
   return jobs.find((job) => ['queued', 'running'].includes(job.status)) ?? null;
+}
+
+export async function recoverStaleCsvImportJobs(limit = 10) {
+  const jobs = await listCsvImportJobs(limit);
+  const staleJobs = jobs
+    .map((job) => ({ job, reason: staleReason(job) }))
+    .filter((item) => item.reason);
+  for (const { job, reason } of staleJobs) {
+    await updateCsvImportJob(job.id, {
+      status: 'failed',
+      finishedAt: nowIso(),
+      error: reason,
+      progress: {
+        ...(job.progress ?? defaultCsvImportProgress()),
+        phase: 'failed',
+        updatedAt: nowIso()
+      }
+    });
+  }
+  return staleJobs.map(({ job, reason }) => ({ id: job.id, reason }));
 }
 
 function createImportBatch(store, payload) {
