@@ -302,16 +302,6 @@ export async function executeCsvImportJob(jobId, options = {}) {
     const touchedBusinessMetricCount = store.state.businessMetrics
       .reduce((count, metric) => count + (metric.sourceFile === sourceName ? 1 : 0), 0);
 
-    await updateCsvImportJob(jobId, {
-      progress: {
-        phase: 'recalculating_priorities',
-        percent: 60,
-        importedRows,
-        urlsAdded: store.state.urls.length - beforeUrls,
-        updatedAt: nowIso()
-      }
-    });
-    const thresholds = jobOptions.recalculatePriorities === false ? null : recalculatePriorities(store);
     const batch = createImportBatch(store, {
       importType,
       sourceName,
@@ -323,6 +313,18 @@ export async function executeCsvImportJob(jobId, options = {}) {
       touchedGscMetricCount,
       touchedBusinessMetricCount
     });
+    await store.save();
+
+    await updateCsvImportJob(jobId, {
+      progress: {
+        phase: 'recalculating_priorities',
+        percent: 60,
+        importedRows,
+        urlsAdded: store.state.urls.length - beforeUrls,
+        updatedAt: nowIso()
+      }
+    });
+    const thresholds = jobOptions.recalculatePriorities === false ? null : recalculatePriorities(store);
     await store.save();
 
     await updateCsvImportJob(jobId, {
@@ -362,12 +364,13 @@ export async function executeCsvImportJob(jobId, options = {}) {
     });
     return result;
   } catch (error) {
+    const currentJob = await getCsvImportJob(jobId);
     await updateCsvImportJob(jobId, {
       status: 'failed',
       finishedAt: nowIso(),
       error: error.message,
       progress: {
-        ...(job.progress ?? defaultCsvImportProgress()),
+        ...(currentJob?.progress ?? job.progress ?? defaultCsvImportProgress()),
         phase: 'failed',
         updatedAt: nowIso()
       }

@@ -16,16 +16,19 @@ function latestMetricByUrl(metrics, metricType) {
   return latest;
 }
 
-function latestPrioritySnapshot(store, urlId) {
+function latestPrioritySnapshotsByUrl(store) {
+  const latest = new Map();
   for (let index = store.state.prioritySnapshots.length - 1; index >= 0; index -= 1) {
     const snapshot = store.state.prioritySnapshots[index];
-    if (Number(snapshot.urlId) === Number(urlId)) return snapshot;
+    const urlId = Number(snapshot.urlId);
+    if (!latest.has(urlId)) latest.set(urlId, snapshot);
   }
-  return null;
+  return latest;
 }
 
-function savePrioritySnapshotIfChanged(store, url, snapshot) {
-  const previous = latestPrioritySnapshot(store, url.id);
+function savePrioritySnapshotIfChanged(store, url, snapshot, latestSnapshots) {
+  const urlId = Number(url.id);
+  const previous = latestSnapshots.get(urlId);
   const changed = !previous
     || previous.priorityTier !== snapshot.priorityTier
     || Boolean(previous.organicFlag) !== Boolean(snapshot.organicFlag)
@@ -34,7 +37,10 @@ function savePrioritySnapshotIfChanged(store, url, snapshot) {
     || Boolean(previous.scaledFlag) !== Boolean(snapshot.scaledFlag)
     || Boolean(previous.manualFlag) !== Boolean(snapshot.manualFlag)
     || Boolean(previous.combinedBusinessFlag) !== Boolean(snapshot.combinedBusinessFlag);
-  if (changed) store.insert('prioritySnapshots', snapshot);
+  if (changed) {
+    const saved = store.insert('prioritySnapshots', snapshot);
+    latestSnapshots.set(urlId, saved);
+  }
 }
 
 export function calculateThresholds(store) {
@@ -59,6 +65,7 @@ export function recalculatePriorities(store) {
   const latestP30 = latestMetricByUrl(store.state.businessMetrics, 'p30_users');
   const latestSignup = latestMetricByUrl(store.state.businessMetrics, 'signup_count');
   const latestGsc = latestMetricByUrl(store.state.gscPerformanceMetrics);
+  const latestSnapshots = latestPrioritySnapshotsByUrl(store);
 
   for (const url of store.state.urls) {
     const previousTier = url.currentPriorityTier;
@@ -80,7 +87,7 @@ export function recalculatePriorities(store) {
         scoreJson: { thresholds, manualPriorityTier: url.manualPriorityTier },
         policyVersion: 'mvp-v1',
         createdAt: now
-      });
+      }, latestSnapshots);
       continue;
     }
 
@@ -127,7 +134,7 @@ export function recalculatePriorities(store) {
       },
       policyVersion: 'mvp-v1',
       createdAt: now
-    });
+    }, latestSnapshots);
   }
 
   return thresholds;
