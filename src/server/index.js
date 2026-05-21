@@ -455,7 +455,11 @@ async function readLiteUrlPage(filters) {
     const cached = await readCachedUrlPage(filters);
     if (cached) return cached;
   } catch (error) {
-    console.error('Cached URL page failed, falling back to app_state JSONB:', error.message);
+    console.error('Cached URL page failed:', error.message);
+    if (process.env.ENABLE_APP_STATE_URL_FALLBACK !== 'true') {
+      throw new Error(`URL cache unavailable. Run /api/settings/maintenance/sync-cache after heavy imports. Cause: ${error.message}`);
+    }
+    console.error('Falling back to app_state JSONB because ENABLE_APP_STATE_URL_FALLBACK=true.');
   }
 
   const pool = getLitePool();
@@ -803,8 +807,11 @@ async function readCachedUrlPage(filters) {
   const pool = getLitePool();
   if (!pool) return null;
   await ensureDashboardCacheTables();
-  if (await cachedTableCount('dashboard_urls') === 0 && process.env.AUTO_SYNC_DASHBOARD_CACHE !== 'false') {
+  if (await cachedTableCount('dashboard_urls') === 0 && process.env.AUTO_SYNC_DASHBOARD_CACHE === 'true') {
     await refreshDashboardCache();
+  }
+  if (await cachedTableCount('dashboard_urls') === 0) {
+    throw new Error('dashboard_urls cache is empty');
   }
 
   const limit = Math.max(1, Math.min(Number(filters.limit || 150), 500));
@@ -886,7 +893,7 @@ async function readCachedProperties() {
   const pool = getLitePool();
   if (!pool) return null;
   await ensureDashboardCacheTables();
-  if (await cachedTableCount('dashboard_properties') === 0 && process.env.AUTO_SYNC_DASHBOARD_CACHE !== 'false') {
+  if (await cachedTableCount('dashboard_properties') === 0 && process.env.AUTO_SYNC_DASHBOARD_CACHE === 'true') {
     await refreshDashboardCache();
   }
   const result = await pool.query('SELECT row_json FROM dashboard_properties ORDER BY property_url ASC');
@@ -897,8 +904,11 @@ async function readCachedOverview() {
   const pool = getLitePool();
   if (!pool) return null;
   await ensureDashboardCacheTables();
-  if (await cachedTableCount('dashboard_urls') === 0 && process.env.AUTO_SYNC_DASHBOARD_CACHE !== 'false') {
+  if (await cachedTableCount('dashboard_urls') === 0 && process.env.AUTO_SYNC_DASHBOARD_CACHE === 'true') {
     await refreshDashboardCache();
+  }
+  if (await cachedTableCount('dashboard_urls') === 0) {
+    throw new Error('dashboard_urls cache is empty. Run /api/settings/maintenance/sync-cache after heavy imports.');
   }
   const appStateKey = process.env.APP_STATE_KEY || 'default';
   const today = dateKey();

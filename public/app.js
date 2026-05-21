@@ -706,9 +706,16 @@ async function loadRoadmap() {
 
 async function loadSettings() {
   const manualSearch = document.querySelector('#manual-overrides-search')?.value?.trim() ?? '';
-  const manualParams = new URLSearchParams({ limit: '200', includeSources: 'true' });
+  const manualParams = new URLSearchParams({ limit: '200' });
   if (manualSearch) manualParams.set('q', manualSearch);
-  const [urlData, settings, sitemaps] = await Promise.all([api(`/api/urls?${manualParams}`), api('/api/settings'), api('/api/sitemaps')]);
+  const [settings, sitemaps] = await Promise.all([api('/api/settings'), api('/api/sitemaps')]);
+  let urlData = { rows: [] };
+  let manualUrlError = null;
+  try {
+    urlData = await api(`/api/urls?${manualParams}`);
+  } catch (error) {
+    manualUrlError = error;
+  }
   const urls = urlData.rows ?? urlData;
   const auth = settings.googleAuth;
   const manualCategory = document.querySelector('#manual-category');
@@ -844,7 +851,9 @@ async function loadSettings() {
       .toLowerCase();
     return !manualSearchLower || url.normalizedUrl.toLowerCase().includes(manualSearchLower) || sourceText.includes(manualSearchLower);
   });
-  document.querySelector('#manual-overrides').innerHTML = table(
+  document.querySelector('#manual-overrides').innerHTML = manualUrlError
+    ? `<div class="empty-state">Manual override URL preview skipped: ${esc(manualUrlError.message)}</div>`
+    : table(
     ['URL', 'Source Sitemap', 'Tier', 'Active', 'Manual', 'Action'],
     manualRows.map((url) => `
       <tr>
