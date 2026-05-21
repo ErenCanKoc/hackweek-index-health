@@ -7,7 +7,9 @@ const state = {
   selectedUrlIds: new Set(),
   pendingCsvImport: null,
   urlPage: 1,
-  urlLimit: 150
+  urlLimit: 150,
+  urlCursorStack: [null],
+  lastUrlFilterKey: ''
 };
 
 const titleMap = {
@@ -183,14 +185,14 @@ function updateSelectedCount() {
 function renderPagination(meta) {
   const total = Number.isFinite(meta.total) ? meta.total : null;
   const limit = meta.limit ?? state.urlLimit;
-  const offset = meta.offset ?? 0;
+  const offset = meta.offset ?? ((state.urlPage - 1) * limit);
   const rowCount = meta.rowCount ?? meta.rows?.length ?? limit;
   const start = rowCount ? offset + 1 : 0;
   const end = total === null ? offset + rowCount : Math.min(offset + limit, total);
   const totalLabel = total === null ? 'many' : total;
   return `
     <span class="selection-count">${start}-${end} / ${totalLabel} URLs</span>
-    <button id="prev-url-page" class="button secondary" ${offset <= 0 ? 'disabled' : ''}>Previous</button>
+    <button id="prev-url-page" class="button secondary" ${state.urlPage <= 1 ? 'disabled' : ''}>Previous</button>
     <button id="next-url-page" class="button secondary" ${meta.hasMore ? '' : 'disabled'}>Next</button>
   `;
 }
@@ -410,11 +412,18 @@ async function loadUrls() {
   if (q) params.set('q', q);
   if (tier) params.set('priorityTier', tier);
   if (scaled) params.set('scaled', scaled);
+  const filterKey = params.toString();
+  if (filterKey !== state.lastUrlFilterKey) {
+    state.urlPage = 1;
+    state.urlCursorStack = [null];
+    state.lastUrlFilterKey = filterKey;
+  }
   const exportParams = new URLSearchParams(params);
   document.querySelector('#export-filtered-urls').href = `/api/report.csv${exportParams.toString() ? `?${exportParams}` : ''}`;
   params.set('limit', state.urlLimit);
-  params.set('offset', (state.urlPage - 1) * state.urlLimit);
   params.set('includeTotal', 'false');
+  const afterId = state.urlCursorStack[state.urlPage - 1];
+  if (afterId) params.set('afterId', afterId);
   const result = await api(`/api/urls?${params}`);
   const urls = result.rows ?? result;
   const meta = result.rows ? result : {
@@ -762,6 +771,22 @@ async function loadSettings() {
       </tr>
     `)
   );
+  const csvImportJobs = settings.csvImportJobs ?? [];
+  if (csvImportJobs.length) {
+    document.querySelector('#import-history').innerHTML += table(
+      ['Job', 'Type', 'Status', 'Progress', 'Started', 'Finished'],
+      csvImportJobs.map((job) => `
+        <tr>
+          <td>#${job.id}</td>
+          <td>${esc(job.options?.importType ?? '-')}</td>
+          <td>${pill(job.status)}</td>
+          <td>${esc(job.progress?.phase ?? 'queued')} ${job.progress?.percent ?? 0}%</td>
+          <td>${fmtDate(job.startedAt ?? job.createdAt)}</td>
+          <td>${fmtDate(job.finishedAt)}</td>
+        </tr>
+      `)
+    );
+  }
   document.querySelector('#source-summary').innerHTML = `
     ${settings.sitemapFetch?.running || settings.sitemapFetch?.lastResult ? renderSitemapProgress(settings.sitemapFetch.progress ?? settings.sitemapFetch.lastResult?.progress ?? {}) : ''}
     <strong>How this works:</strong> Fetching now runs as a durable job. On Render, set <code>RENDER_API_KEY</code> and <code>RENDER_SERVICE_ID</code> to run it as a one-off job; otherwise it uses the same job table with a local fallback.<br>
@@ -941,6 +966,9 @@ document.addEventListener('click', async (event) => {
     if (event.target.closest('#next-url-page').disabled) return;
     setStatus('Loading next page...');
     state.urlPage += 1;
+    const rows = [...document.querySelectorAll('[data-select-url]')];
+    const lastVisibleId = rows.map((row) => Number(row.dataset.selectUrl)).filter(Boolean).at(-1);
+    if (lastVisibleId) state.urlCursorStack[state.urlPage - 1] = lastVisibleId;
     state.openUrlId = null;
     state.openUrlDetail = null;
     await loadUrls();
@@ -1379,7 +1407,7 @@ document.querySelector('#import-csv').addEventListener('click', async () => {
       setStatus(`Sitemap fetch is still running since ${fmtDate(fetchStatus.sitemapFetch.startedAt)}. Apply the CSV after it finishes.`);
       return;
     }
-    setStatus('Importing CSV and recalculating priorities...');
+    setStatus('Starting CSV import job...');
     const result = await api('/api/settings/csv-import', {
       method: 'POST',
       body: JSON.stringify(state.pendingCsvImport)
@@ -1387,10 +1415,10 @@ document.querySelector('#import-csv').addEventListener('click', async () => {
     state.pendingCsvImport = null;
     document.querySelector('#csv-import-text').value = '';
     document.querySelector('#csv-import-file').value = '';
-    document.querySelector('#csv-import-result').value = `${result.importedRows} rows, ${result.urlsAdded} new URLs`;
+    document.querySelector('#csv-import-result').value = `Job #${result.job?.id ?? '-'} queued`;
     document.querySelector('#csv-preview').innerHTML = '';
     await refresh();
-    setStatus(`Imported ${result.importedRows} ${result.importType} row(s). URL list is now ${result.urlsAfter}.`);
+    setStatus(`CSV import job started. Priority recalculation and cache sync will run in the worker.`);
   } catch (error) {
     document.querySelector('#import-csv').disabled = false;
     document.querySelector('#cancel-csv-import').disabled = false;
@@ -1504,6 +1532,7 @@ document.querySelector('#manual-overrides-search').addEventListener('input', () 
 ['#url-search', '#tier-filter', '#scaled-filter'].forEach((selector) => {
   document.querySelector(selector).addEventListener('input', () => {
     state.urlPage = 1;
+    state.urlCursorStack = [null];
     state.openUrlId = null;
     state.openUrlDetail = null;
     if (state.view === 'urls') loadUrls().catch((error) => setStatus(error.message));

@@ -23,7 +23,8 @@ const DEFAULT_STATE = {
   businessMetrics: [],
   importBatches: [],
   configSources: null,
-  sitemapFetchJobs: []
+  sitemapFetchJobs: [],
+  csvImportJobs: []
 };
 
 export class Store {

@@ -45,6 +45,14 @@ import {
   listSitemapFetchJobs,
   updateSitemapFetchJob
 } from '../core/sitemapFetchJobs.js';
+import {
+  createCsvImportJob,
+  executeCsvImportJob,
+  getCsvImportJob,
+  hasActiveCsvImportJob,
+  listCsvImportJobs,
+  updateCsvImportJob
+} from '../core/csvImportJobs.js';
 import { getSearchConsoleAccessToken } from '../core/inspectionProvider.js';
 import { dateKey, daysBetween, normalizeUrl, nowIso, parseCsv } from '../core/utils.js';
 
@@ -843,8 +851,11 @@ async function readCachedUrlPage(filters) {
   if (filters.scaled === 'true') where.push('is_scaled_content = true');
   if (filters.scaled === 'false') where.push('is_scaled_content = false');
   if (filters.q) where.push(`LOWER(normalized_url) LIKE ${addParam(`%${String(filters.q).toLowerCase()}%`)}`);
+  if (filters.afterId) where.push(`id > ${addParam(Number(filters.afterId) || 0)}`);
 
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  const offsetSql = filters.afterId ? '' : `OFFSET ${addParam(offset)}`;
+  const limitSql = `LIMIT ${addParam(includeTotal ? limit : limit + 1)}`;
   const rowsResult = await pool.query(
     `
       SELECT
@@ -866,13 +877,13 @@ async function readCachedUrlPage(filters) {
       FROM dashboard_urls
       ${whereSql}
       ORDER BY id ASC
-      OFFSET ${addParam(offset)}
-      LIMIT ${addParam(includeTotal ? limit : limit + 1)}
+      ${offsetSql}
+      ${limitSql}
     `,
     params
   );
   const countResult = includeTotal
-    ? await pool.query(`SELECT COUNT(*)::int AS total FROM dashboard_urls ${whereSql}`, params.slice(0, params.length - 2))
+    ? await pool.query(`SELECT COUNT(*)::int AS total FROM dashboard_urls ${whereSql}`, params.slice(0, filters.afterId ? params.length - 1 : params.length - 2))
     : null;
   const total = includeTotal ? Number(countResult.rows[0]?.total ?? 0) : null;
   const pageRows = includeTotal ? rowsResult.rows : rowsResult.rows.slice(0, limit);
@@ -1462,11 +1473,68 @@ async function handleLiteApi(pathname, parsed, request, response) {
       cron: cronState,
       sitemapFetch: await latestSitemapFetchState(),
       sitemapFetchJobs: await listSitemapFetchJobs(5),
+      csvImportJobs: await listCsvImportJobs(5),
       importBatches: [],
       openAI: openAiStatus(),
       googleAuth: await googleAuthStatus(),
       oauthRedirectUri: `${publicOrigin(parsed.origin)}/auth/google/callback`,
       lite: true
+    });
+    return true;
+  }
+
+  if (pathname === '/api/csv-import-jobs') {
+    sendJson(response, 200, { ok: true, jobs: await listCsvImportJobs(Number(parsed.searchParams.get('limit') ?? 10)) });
+    return true;
+  }
+
+  if (pathname === '/api/actions/csv-import/status') {
+    const jobId = parsed.searchParams.get('jobId');
+    const job = jobId ? await getCsvImportJob(jobId) : (await listCsvImportJobs(1))[0] ?? null;
+    sendJson(response, 200, { ok: true, job });
+    return true;
+  }
+
+  if (pathname === '/api/settings/csv-import' && request.method === 'POST') {
+    const activeSitemapFetch = await hasActiveSitemapFetchJob();
+    if (activeSitemapFetch) {
+      sendJson(response, 409, {
+        error: 'Sitemap fetch is still running. Wait for it to finish before applying GSC/P30 CSV imports.',
+        sitemapFetch: sitemapFetchStateFromJob(activeSitemapFetch),
+        job: activeSitemapFetch
+      });
+      return true;
+    }
+    const activeCsvImport = await hasActiveCsvImportJob();
+    if (activeCsvImport) {
+      sendJson(response, 409, {
+        error: 'CSV import is already running.',
+        job: activeCsvImport
+      });
+      return true;
+    }
+    const body = await readBody(request);
+    const csvText = String(body.csvText ?? body.csv ?? '').trim();
+    const importType = String(body.importType ?? body.type ?? '').trim();
+    if (!csvText) {
+      sendJson(response, 400, { error: 'csvText is required' });
+      return true;
+    }
+    if (!['gsc', 'p30_users', 'signup_count'].includes(importType)) {
+      sendJson(response, 400, { error: 'importType must be gsc, p30_users, or signup_count' });
+      return true;
+    }
+    const result = await startCsvImportAction({
+      csvText,
+      importType,
+      recalculatePriorities: body.recalculatePriorities !== false,
+      syncDashboardCache: body.syncDashboardCache !== false
+    });
+    sendJson(response, 202, {
+      ok: true,
+      message: 'CSV import started in the background.',
+      job: result.job,
+      triggerMode: result.triggerMode
     });
     return true;
   }
@@ -2516,6 +2584,58 @@ async function triggerRenderOneOffSitemapJob(jobId) {
   return { ...payload, startCommand };
 }
 
+async function triggerRenderOneOffCsvImportJob(jobId) {
+  const { apiKey, serviceId } = renderOneOffConfig();
+  if (!apiKey || !serviceId) return null;
+  const startCommand = `node scripts/run-csv-import-job.mjs ${Number(jobId)}`;
+  const response = await fetch(`https://api.render.com/v1/services/${encodeURIComponent(serviceId)}/jobs`, {
+    method: 'POST',
+    headers: {
+      accept: 'application/json',
+      authorization: `Bearer ${apiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({ startCommand })
+  });
+  const text = await response.text();
+  let payload = null;
+  try {
+    payload = text ? JSON.parse(text) : null;
+  } catch {
+    payload = { raw: text };
+  }
+  if (!response.ok) {
+    throw new Error(`Render job create failed ${response.status}: ${payload?.message ?? payload?.error ?? text}`);
+  }
+  return { ...payload, startCommand };
+}
+
+async function startCsvImportAction(options = {}) {
+  const preferredMode = renderOneOffConfig().apiKey && renderOneOffConfig().serviceId ? 'render_one_off' : 'local';
+  let job = await createCsvImportJob(options, preferredMode);
+  if (preferredMode === 'render_one_off') {
+    try {
+      const renderJob = await triggerRenderOneOffCsvImportJob(job.id);
+      job = await updateCsvImportJob(job.id, { renderJob, triggerMode: 'render_one_off' });
+      return { job, triggerMode: 'render_one_off' };
+    } catch (error) {
+      console.error('Render one-off CSV import job trigger failed, falling back to local runner:', error);
+      job = await updateCsvImportJob(job.id, {
+        triggerMode: 'local_fallback',
+        error: `Render one-off trigger failed; local fallback started: ${error.message}`
+      });
+    }
+  }
+
+  executeCsvImportJob(job.id, {
+    store: process.env.DATABASE_URL ? context?.store : undefined,
+    afterStateSave: async () => {
+      if (context?.store) await context.store.load();
+    }
+  }).catch((error) => console.error('CSV import job failed:', error));
+  return { job, triggerMode: job.triggerMode };
+}
+
 async function startSitemapFetchAction(body = {}, parsed = null) {
   const activeJob = await hasActiveSitemapFetchJob();
   if (activeJob) return { accepted: false, alreadyRunning: true, job: activeJob, state: sitemapFetchStateFromJob(activeJob) };
@@ -2808,6 +2928,7 @@ const server = http.createServer(async (request, response) => {
         cron: cronState,
         sitemapFetch: await latestSitemapFetchState(),
         sitemapFetchJobs: await listSitemapFetchJobs(5),
+        csvImportJobs: await listCsvImportJobs(5),
         importBatches: (context.store.state.importBatches ?? [])
           .slice()
           .reverse()
@@ -2942,6 +3063,18 @@ const server = http.createServer(async (request, response) => {
       return;
     }
 
+    if (pathname === '/api/csv-import-jobs') {
+      sendJson(response, 200, { ok: true, jobs: await listCsvImportJobs(Number(parsed.searchParams.get('limit') ?? 10)) });
+      return;
+    }
+
+    if (pathname === '/api/actions/csv-import/status') {
+      const jobId = parsed.searchParams.get('jobId');
+      const job = jobId ? await getCsvImportJob(jobId) : (await listCsvImportJobs(1))[0] ?? null;
+      sendJson(response, 200, { ok: true, job });
+      return;
+    }
+
     if (pathname === '/api/actions/fetch-sitemaps' && request.method === 'POST') {
       const body = await readBody(request);
       const result = await startSitemapFetchAction(body, parsed);
@@ -2989,6 +3122,14 @@ const server = http.createServer(async (request, response) => {
         });
         return;
       }
+      const activeCsvImport = await hasActiveCsvImportJob();
+      if (activeCsvImport) {
+        sendJson(response, 409, {
+          error: 'CSV import is already running.',
+          job: activeCsvImport
+        });
+        return;
+      }
       const body = await readBody(request);
       const csvText = String(body.csvText ?? body.csv ?? '').trim();
       const importType = String(body.importType ?? body.type ?? '').trim();
@@ -3000,45 +3141,17 @@ const server = http.createServer(async (request, response) => {
         sendJson(response, 400, { error: 'importType must be gsc, p30_users, or signup_count' });
         return;
       }
-
-      const beforeUrls = context.store.state.urls.length;
-      const sourceName = `dashboard:${importType}:${nowIso()}`;
-      const beforeUrlIds = new Set(context.store.state.urls.map((url) => Number(url.id)));
-      let importedRows = 0;
-      if (importType === 'gsc') {
-        importedRows = ingestGscCsvText(context.store, csvText, sourceName);
-      } else {
-        importedRows = ingestBusinessWideCsvText(context.store, csvText, importType, sourceName);
-      }
-      const createdUrlIds = context.store.state.urls
-        .filter((url) => !beforeUrlIds.has(Number(url.id)))
-        .map((url) => url.id);
-      const touchedGscMetricCount = context.store.state.gscPerformanceMetrics
-        .reduce((count, metric) => count + (metric.sourceFile === sourceName ? 1 : 0), 0);
-      const touchedBusinessMetricCount = context.store.state.businessMetrics
-        .reduce((count, metric) => count + (metric.sourceFile === sourceName ? 1 : 0), 0);
-      const thresholds = recalculatePriorities(context.store);
-      const batch = createImportBatch(context.store, {
+      const result = await startCsvImportAction({
+        csvText,
         importType,
-        sourceName,
-        importedRows,
-        urlsBefore: beforeUrls,
-        urlsAfter: context.store.state.urls.length,
-        urlsAdded: context.store.state.urls.length - beforeUrls,
-        createdUrlIds,
-        touchedGscMetricCount,
-        touchedBusinessMetricCount
+        recalculatePriorities: body.recalculatePriorities !== false,
+        syncDashboardCache: body.syncDashboardCache !== false
       });
-      await context.store.save();
-      sendJson(response, 200, {
+      sendJson(response, 202, {
         ok: true,
-        importBatch: batch,
-        importType,
-        importedRows,
-        urlsBefore: beforeUrls,
-        urlsAfter: context.store.state.urls.length,
-        urlsAdded: context.store.state.urls.length - beforeUrls,
-        thresholds
+        message: 'CSV import started in the background.',
+        job: result.job,
+        triggerMode: result.triggerMode
       });
       return;
     }

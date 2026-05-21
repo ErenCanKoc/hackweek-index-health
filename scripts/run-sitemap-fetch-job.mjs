@@ -43,8 +43,29 @@ if (!Number.isInteger(jobId) || jobId <= 0) {
 }
 
 try {
-  const result = await executeSitemapFetchJob(jobId);
-  console.log(JSON.stringify({ ok: true, jobId, result }, null, 2));
+  const results = [];
+  const maxBatches = Math.max(1, Number(process.env.SITEMAP_FETCH_AUTO_CONTINUE_MAX_BATCHES ?? 1) || 1);
+  const autoContinue = process.env.SITEMAP_FETCH_AUTO_CONTINUE === 'true';
+  for (let batchIndex = 0; batchIndex < maxBatches; batchIndex += 1) {
+    const result = await executeSitemapFetchJob(jobId);
+    results.push({ jobId, result });
+    if (!autoContinue || !result?.counts?.hasMoreSitemaps) break;
+    const nextJob = await createSitemapFetchJob({
+      ...(result.options ?? {}),
+      reason: process.env.SITEMAP_FETCH_REASON ?? 'external_one_off_auto_continue',
+      fetchChildSitemaps: true,
+      useDemoUrlsWhenChildFetchIsOff: false,
+      useDemoUrlsWhenChildFetchFails: false,
+      recalculatePriorities: process.env.SITEMAP_FETCH_RECALCULATE_PRIORITIES === 'true',
+      runSchedulerAfterFetch: process.env.SITEMAP_FETCH_RUN_SCHEDULER === 'true',
+      schedulerLimit: Number(process.env.DAILY_CRON_SCHEDULER_LIMIT ?? 500),
+      schedulerForce: false,
+      fetchConcurrency: Number(process.env.SITEMAP_FETCH_CONCURRENCY ?? 4),
+      sitemapBatchSize: Number(process.env.SITEMAP_FETCH_BATCH_SIZE ?? 50)
+    }, process.env.SITEMAP_FETCH_TRIGGER_MODE ?? 'render_one_off_auto_continue');
+    jobId = Number(nextJob.id);
+  }
+  console.log(JSON.stringify({ ok: true, results }, null, 2));
 } catch (error) {
   console.error(`Sitemap fetch job ${jobId} failed:`, error);
   process.exit(1);
