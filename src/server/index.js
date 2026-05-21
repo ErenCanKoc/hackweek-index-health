@@ -782,6 +782,18 @@ async function cachedTableCount(tableName) {
   }
 }
 
+async function cachedTableHasRows(tableName) {
+  const pool = getLitePool();
+  if (!pool) return false;
+  if (!['dashboard_urls', 'dashboard_properties'].includes(tableName)) throw new Error('Invalid cache table');
+  try {
+    const result = await pool.query(`SELECT 1 FROM ${tableName} LIMIT 1`);
+    return result.rowCount > 0;
+  } catch {
+    return false;
+  }
+}
+
 async function readLiteSourcesForUrlIds(urlIds) {
   const pool = getLitePool();
   if (!pool || !urlIds.length) return new Map();
@@ -807,15 +819,16 @@ async function readCachedUrlPage(filters) {
   const pool = getLitePool();
   if (!pool) return null;
   await ensureDashboardCacheTables();
-  if (await cachedTableCount('dashboard_urls') === 0 && process.env.AUTO_SYNC_DASHBOARD_CACHE === 'true') {
+  if (!(await cachedTableHasRows('dashboard_urls')) && process.env.AUTO_SYNC_DASHBOARD_CACHE === 'true') {
     await refreshDashboardCache();
   }
-  if (await cachedTableCount('dashboard_urls') === 0) {
+  if (!(await cachedTableHasRows('dashboard_urls'))) {
     throw new Error('dashboard_urls cache is empty');
   }
 
   const limit = Math.max(1, Math.min(Number(filters.limit || 150), 500));
   const offset = Math.max(0, Number(filters.offset || 0) || 0);
+  const includeTotal = filters.includeTotal !== 'false';
   const params = [];
   const where = [];
   const addParam = (value) => {
@@ -832,7 +845,6 @@ async function readCachedUrlPage(filters) {
   if (filters.q) where.push(`LOWER(normalized_url) LIKE ${addParam(`%${String(filters.q).toLowerCase()}%`)}`);
 
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
-  const countResult = await pool.query(`SELECT COUNT(*)::int AS total FROM dashboard_urls ${whereSql}`, params);
   const rowsResult = await pool.query(
     `
       SELECT
@@ -855,12 +867,16 @@ async function readCachedUrlPage(filters) {
       ${whereSql}
       ORDER BY id ASC
       OFFSET ${addParam(offset)}
-      LIMIT ${addParam(limit)}
+      LIMIT ${addParam(includeTotal ? limit : limit + 1)}
     `,
     params
   );
-  const total = Number(countResult.rows[0]?.total ?? 0);
-  const rows = rowsResult.rows.map((row) => ({
+  const countResult = includeTotal
+    ? await pool.query(`SELECT COUNT(*)::int AS total FROM dashboard_urls ${whereSql}`, params.slice(0, params.length - 2))
+    : null;
+  const total = includeTotal ? Number(countResult.rows[0]?.total ?? 0) : null;
+  const pageRows = includeTotal ? rowsResult.rows : rowsResult.rows.slice(0, limit);
+  const rows = pageRows.map((row) => ({
       id: Number(row.id),
       normalizedUrl: row.normalized_url,
       url: row.url,
@@ -883,7 +899,8 @@ async function readCachedUrlPage(filters) {
     total,
     limit,
     offset,
-    hasMore: offset + limit < total,
+    rowCount: rows.length,
+    hasMore: includeTotal ? offset + limit < total : rowsResult.rows.length > limit,
     lite: true,
     cached: true
   };

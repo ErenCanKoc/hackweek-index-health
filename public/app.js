@@ -181,13 +181,15 @@ function updateSelectedCount() {
 }
 
 function renderPagination(meta) {
-  const total = meta.total ?? 0;
+  const total = Number.isFinite(meta.total) ? meta.total : null;
   const limit = meta.limit ?? state.urlLimit;
   const offset = meta.offset ?? 0;
-  const start = total ? offset + 1 : 0;
-  const end = Math.min(offset + limit, total);
+  const rowCount = meta.rowCount ?? meta.rows?.length ?? limit;
+  const start = rowCount ? offset + 1 : 0;
+  const end = total === null ? offset + rowCount : Math.min(offset + limit, total);
+  const totalLabel = total === null ? 'many' : total;
   return `
-    <span class="selection-count">${start}-${end} / ${total} URLs</span>
+    <span class="selection-count">${start}-${end} / ${totalLabel} URLs</span>
     <button id="prev-url-page" class="button secondary" ${offset <= 0 ? 'disabled' : ''}>Previous</button>
     <button id="next-url-page" class="button secondary" ${meta.hasMore ? '' : 'disabled'}>Next</button>
   `;
@@ -412,6 +414,7 @@ async function loadUrls() {
   document.querySelector('#export-filtered-urls').href = `/api/report.csv${exportParams.toString() ? `?${exportParams}` : ''}`;
   params.set('limit', state.urlLimit);
   params.set('offset', (state.urlPage - 1) * state.urlLimit);
+  params.set('includeTotal', 'false');
   const result = await api(`/api/urls?${params}`);
   const urls = result.rows ?? result;
   const meta = result.rows ? result : {
