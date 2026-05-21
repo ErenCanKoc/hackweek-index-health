@@ -1,6 +1,6 @@
 import { maybeCreateResultAlerts, upsertActiveAlert } from './alerts.js';
 import { createInspectionProvider } from './inspectionProvider.js';
-import { chooseBestProperty, incrementQuota, resolveEligibleProperties } from './propertyResolver.js';
+import { chooseBestProperty, incrementQuota, resetDailyQuotasIfNeeded, resolveEligibleProperties } from './propertyResolver.js';
 import { recalculatePriorities } from './priority.js';
 import {
   calculateNextDueAt,
@@ -149,27 +149,31 @@ export async function runScheduler(store, config, options = {}) {
   const provider = options.provider ?? createInspectionProvider(config.policy);
   const summary = {
     thresholds: recalculatePriorities(store),
+    quotaResets: resetDailyQuotasIfNeeded(store, now),
     createdJobs: ensureJobsForDueUrls(store, config.policy, now, { force, urlId: targetUrlId }),
     inspected: 0,
     skipped: 0,
     alertsCreated: 0,
     technicalChecks: 0,
+    inspectedByProperty: {},
+    skippedByReason: {},
     errors: []
   };
 
   const pendingJobs = store.state.inspectionJobs
     .filter((job) => job.status === 'pending' && new Date(job.dueAt) <= now)
     .filter((job) => !targetUrlId || Number(job.urlId) === targetUrlId)
-    .sort(jobSort)
-    .slice(0, limit);
+    .sort(jobSort);
 
   for (const job of pendingJobs) {
+    if (summary.inspected >= limit) break;
     const urlRecord = store.findById('urls', job.urlId);
     if (!urlRecord || !urlRecord.isActive || urlRecord.isManuallyExcluded) {
       job.status = 'skipped';
       job.lastError = 'url_not_active';
       job.updatedAt = nowIso();
       summary.skipped += 1;
+      summary.skippedByReason.url_not_active = (summary.skippedByReason.url_not_active ?? 0) + 1;
       continue;
     }
 
@@ -178,6 +182,7 @@ export async function runScheduler(store, config, options = {}) {
       job.lastError = 'already_inspected_today';
       job.updatedAt = nowIso();
       summary.skipped += 1;
+      summary.skippedByReason.already_inspected_today = (summary.skippedByReason.already_inspected_today ?? 0) + 1;
       continue;
     }
 
@@ -188,6 +193,7 @@ export async function runScheduler(store, config, options = {}) {
       job.lastError = 'no_available_property_quota';
       job.updatedAt = nowIso();
       summary.skipped += 1;
+      summary.skippedByReason.no_available_property_quota = (summary.skippedByReason.no_available_property_quota ?? 0) + 1;
       upsertActiveAlert(store, {
         urlId: urlRecord.id,
         alertType: 'all_properties_quota_exhausted',
@@ -255,6 +261,7 @@ export async function runScheduler(store, config, options = {}) {
       job.lockedAt = null;
       job.updatedAt = nowIso();
       summary.inspected += 1;
+      summary.inspectedByProperty[property.propertyUrl] = (summary.inspectedByProperty[property.propertyUrl] ?? 0) + 1;
     } catch (error) {
       job.status = job.attemptCount >= 3 ? 'failed' : 'pending';
       job.lastError = error.message;
@@ -262,6 +269,7 @@ export async function runScheduler(store, config, options = {}) {
       job.lockedAt = null;
       job.updatedAt = nowIso();
       summary.errors.push({ jobId: job.id, error: error.message });
+      summary.skippedByReason.error = (summary.skippedByReason.error ?? 0) + 1;
     }
   }
 

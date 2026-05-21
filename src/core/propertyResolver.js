@@ -170,6 +170,20 @@ export function chooseBestProperty(store, eligibleProperties, policy) {
     })[0] ?? null;
 }
 
+export function resetDailyQuotasIfNeeded(store, now = new Date()) {
+  const today = now.toISOString().slice(0, 10);
+  let reset = 0;
+  for (const property of store.state.properties) {
+    const resetDate = property.quotaResetAt ? String(property.quotaResetAt).slice(0, 10) : null;
+    if (resetDate === today) continue;
+    property.dailyQuotaUsed = 0;
+    property.quotaResetAt = today;
+    property.updatedAt = nowIso();
+    reset += 1;
+  }
+  return reset;
+}
+
 export function incrementQuota(property) {
   property.dailyQuotaUsed += 1;
   property.monthlyQuotaUsed += 1;
