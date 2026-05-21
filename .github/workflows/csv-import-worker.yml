@@ -1,4 +1,4 @@
-name: CSV import task worker
+name: CSV import task worker v2
 
 on:
   schedule:
@@ -47,4 +47,4 @@ jobs:
           APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
           JOB_ID: ${{ github.event.inputs.job_id }}
-          MAX_TASKS: ${{ github.event.inputs.max_tasks || '25' }}
+          MAX_TASKS: ${{ github.event.inputs.max_tasks }}
