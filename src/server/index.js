@@ -1496,15 +1496,6 @@ async function handleLiteApi(pathname, parsed, request, response) {
   }
 
   if (pathname === '/api/settings/csv-import' && request.method === 'POST') {
-    const activeSitemapFetch = await hasActiveSitemapFetchJob();
-    if (activeSitemapFetch) {
-      sendJson(response, 409, {
-        error: 'Sitemap fetch is still running. Wait for it to finish before applying GSC/P30 CSV imports.',
-        sitemapFetch: sitemapFetchStateFromJob(activeSitemapFetch),
-        job: activeSitemapFetch
-      });
-      return true;
-    }
     const activeCsvImport = await hasActiveCsvImportJob();
     if (activeCsvImport) {
       sendJson(response, 409, {
@@ -3113,15 +3104,6 @@ const server = http.createServer(async (request, response) => {
     }
 
     if (pathname === '/api/settings/csv-import' && request.method === 'POST') {
-      const activeSitemapFetch = await hasActiveSitemapFetchJob();
-      if (activeSitemapFetch) {
-        sendJson(response, 409, {
-          error: 'Sitemap fetch is still running. Wait for it to finish before applying GSC/P30 CSV imports.',
-          sitemapFetch: sitemapFetchStateFromJob(activeSitemapFetch),
-          job: activeSitemapFetch
-        });
-        return;
-      }
       const activeCsvImport = await hasActiveCsvImportJob();
       if (activeCsvImport) {
         sendJson(response, 409, {

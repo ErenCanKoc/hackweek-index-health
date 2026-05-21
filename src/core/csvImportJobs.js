@@ -4,6 +4,7 @@ import { recalculatePriorities } from './priority.js';
 import { Store } from './store.js';
 import { nowIso } from './utils.js';
 import { refreshDashboardCache } from './dashboardCache.js';
+import { withStateMutationLock } from './jobLocks.js';
 
 let jobPool = null;
 
@@ -227,6 +228,7 @@ export async function executeCsvImportJob(jobId, options = {}) {
     progress: { ...defaultCsvImportProgress(), phase: 'importing', updatedAt: startedAt }
   });
 
+  return await withStateMutationLock('csv_import', async () => {
   try {
     const jobOptions = job.options ?? {};
     const csvText = String(jobOptions.csvText ?? jobOptions.csv ?? '').trim();
@@ -323,4 +325,5 @@ export async function executeCsvImportJob(jobId, options = {}) {
     });
     throw error;
   }
+  });
 }

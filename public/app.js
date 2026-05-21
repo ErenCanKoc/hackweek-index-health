@@ -1398,16 +1398,8 @@ document.querySelector('#import-csv').addEventListener('click', async () => {
   }
   document.querySelector('#import-csv').disabled = true;
   document.querySelector('#cancel-csv-import').disabled = true;
-  setStatus('Checking sitemap fetch status...');
+  setStatus('Starting CSV import job...');
   try {
-    const fetchStatus = await api('/api/actions/fetch-sitemaps/status', { timeoutMs: 10000 });
-    if (fetchStatus.sitemapFetch?.running) {
-      document.querySelector('#import-csv').disabled = false;
-      document.querySelector('#cancel-csv-import').disabled = false;
-      setStatus(`Sitemap fetch is still running since ${fmtDate(fetchStatus.sitemapFetch.startedAt)}. Apply the CSV after it finishes.`);
-      return;
-    }
-    setStatus('Starting CSV import job...');
     const result = await api('/api/settings/csv-import', {
       method: 'POST',
       body: JSON.stringify(state.pendingCsvImport)

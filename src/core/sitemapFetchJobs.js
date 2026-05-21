@@ -6,6 +6,7 @@ import { runScheduler } from './scheduler.js';
 import { Store } from './store.js';
 import { isSitemapLikeUrl } from './sitemap.js';
 import { nowIso } from './utils.js';
+import { withStateMutationLock } from './jobLocks.js';
 
 let jobPool = null;
 
@@ -355,6 +356,7 @@ export async function executeSitemapFetchJob(jobId, options = {}) {
     }
   });
 
+  return await withStateMutationLock('sitemap_fetch', async () => {
   const store = options.store ?? await new Store().load();
   const config = options.config ?? withStoredSources(await loadConfig(), store);
   const fetchOptions = job.options ?? {};
@@ -440,4 +442,5 @@ export async function executeSitemapFetchJob(jobId, options = {}) {
     });
     throw error;
   }
+  });
 }
