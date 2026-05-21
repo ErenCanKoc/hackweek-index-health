@@ -548,7 +548,8 @@ async function requeueFailedCsvImportTasks(jobId) {
 
 function isTransientDbConnectionError(error) {
   const message = String(error?.message ?? error ?? '');
-  return message.includes('EMAXCONNSESSION')
+  return error?.code === 'ESTATELOCKTIMEOUT'
+    || message.includes('EMAXCONNSESSION')
     || message.includes('max clients reached')
     || message.includes('too many clients')
     || message.includes('remaining connection slots');
@@ -607,6 +608,7 @@ export async function processCsvImportJobTasks(jobId, options = {}) {
 
   const maxTasks = Math.max(1, Number(options.maxTasks ?? process.env.CSV_IMPORT_WORKER_MAX_TASKS ?? 25) || 25);
   const maxRuntimeMs = Math.max(10000, Number(options.maxRuntimeMs ?? process.env.CSV_IMPORT_WORKER_MAX_RUNTIME_MS ?? 240000) || 240000);
+  const lockMaxWaitMs = Math.max(5000, Number(options.lockMaxWaitMs ?? process.env.CSV_IMPORT_LOCK_MAX_WAIT_MS ?? 90000) || 90000);
   const started = Date.now();
   let processedTasks = 0;
 
@@ -633,6 +635,7 @@ export async function processCsvImportJobTasks(jobId, options = {}) {
           urlsAdded: store.state.urls.length - beforeUrls
         };
       }, {
+        maxWaitMs: lockMaxWaitMs,
         onWait: async () => {
           await updateCsvImportTask(task.id, { status: 'running' });
           await updateChunkedProgress(jobId, 'waiting_for_state_lock');
@@ -717,8 +720,22 @@ export async function processCsvImportJobTasks(jobId, options = {}) {
       if (typeof options.afterStateSave === 'function') await options.afterStateSave();
       return value;
     }, {
+      maxWaitMs: lockMaxWaitMs,
       onWait: async () => updateChunkedProgress(jobId, 'waiting_for_state_lock')
+    }).catch(async (error) => {
+      if (!isTransientDbConnectionError(error)) throw error;
+      await updateChunkedProgress(jobId, 'waiting_for_state_lock');
+      return null;
     });
+    if (thresholds === null) {
+      return {
+        ok: true,
+        partial: true,
+        processedTasks,
+        waitingFor: 'state_lock',
+        stats
+      };
+    }
   }
 
   await updateCsvImportJob(jobId, {

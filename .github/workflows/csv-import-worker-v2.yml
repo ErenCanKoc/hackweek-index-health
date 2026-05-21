@@ -37,11 +37,12 @@ jobs:
           fi
           echo "Calling CSV import worker endpoint with CRON_SECRET length ${#CRON_SECRET}."
           curl --fail-with-body --show-error --silent \
+            --max-time 240 \
             --request POST \
             --header "content-type: application/json" \
             --header "x-cron-secret: $CRON_SECRET" \
             --header "authorization: Bearer $CRON_SECRET" \
-            --data "{\"maxTasks\":${MAX_TASKS:-5},\"maxRuntimeMs\":180000,\"resumeFailed\":true}" \
+            --data "{\"maxTasks\":${MAX_TASKS:-5},\"maxRuntimeMs\":150000,\"lockMaxWaitMs\":90000,\"resumeFailed\":true}" \
             "$url"
         env:
           APP_BASE_URL: ${{ secrets.APP_BASE_URL }}

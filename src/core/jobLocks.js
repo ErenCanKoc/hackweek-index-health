@@ -31,14 +31,27 @@ export async function withStateMutationLock(taskName, task, options = {}) {
   const client = await pool.connect();
   const lockScope = `${appStateKey()}:state_mutation`;
   const waitIntervalMs = Math.max(1000, Number(options.waitIntervalMs ?? 15000));
+  const maxWaitMs = Number.isFinite(Number(options.maxWaitMs)) && Number(options.maxWaitMs) > 0
+    ? Number(options.maxWaitMs)
+    : null;
   const lockLabel = taskName || 'state_mutation';
+  const startedAt = Date.now();
+  let acquired = false;
   try {
     for (;;) {
       const result = await client.query(
         'SELECT pg_try_advisory_lock(hashtext($1), hashtext($2)) AS acquired',
         [lockScope, 'exclusive']
       );
-      if (result.rows[0]?.acquired) break;
+      if (result.rows[0]?.acquired) {
+        acquired = true;
+        break;
+      }
+      if (maxWaitMs && Date.now() - startedAt >= maxWaitMs) {
+        const error = new Error(`State mutation lock wait exceeded ${maxWaitMs}ms for ${lockLabel}.`);
+        error.code = 'ESTATELOCKTIMEOUT';
+        throw error;
+      }
       if (typeof options.onWait === 'function') {
         await options.onWait({ taskName: lockLabel, waitedAt: new Date().toISOString() });
       }
@@ -50,7 +63,9 @@ export async function withStateMutationLock(taskName, task, options = {}) {
     return await task();
   } finally {
     try {
-      await client.query('SELECT pg_advisory_unlock(hashtext($1), hashtext($2))', [lockScope, 'exclusive']);
+      if (acquired) {
+        await client.query('SELECT pg_advisory_unlock(hashtext($1), hashtext($2))', [lockScope, 'exclusive']);
+      }
     } finally {
       client.release();
     }
