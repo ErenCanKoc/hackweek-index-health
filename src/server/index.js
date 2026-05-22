@@ -325,6 +325,67 @@ function sendText(response, statusCode, payload, contentType = 'text/plain; char
   response.end(payload);
 }
 
+const liteReadCache = new Map();
+let dashboardCacheTablesReady = false;
+let dashboardCacheTablesPromise = null;
+
+function cloneJson(value) {
+  if (value === undefined) return value;
+  return JSON.parse(JSON.stringify(value));
+}
+
+function rememberLiteRead(key, payload) {
+  if (!key || payload === undefined) return payload;
+  if (liteReadCache.size > 100) {
+    const firstKey = liteReadCache.keys().next().value;
+    if (firstKey) liteReadCache.delete(firstKey);
+  }
+  liteReadCache.set(key, {
+    cachedAt: nowIso(),
+    payload: cloneJson(payload)
+  });
+  return payload;
+}
+
+async function readWithLiteStaleCache(key, producer, fallbackProducer = null) {
+  try {
+    return rememberLiteRead(key, await producer());
+  } catch (error) {
+    const cached = liteReadCache.get(key);
+    if (isDatabaseBusyError(error) && cached) {
+      console.warn(`Serving stale lite response for ${key}:`, error.message);
+      const payload = cloneJson(cached.payload);
+      if (Array.isArray(payload)) return payload;
+      return {
+        ...payload,
+        stale: true,
+        cachedAt: cached.cachedAt,
+        warning: 'Database is busy; serving the latest successful dashboard snapshot.'
+      };
+    }
+    if (isDatabaseBusyError(error) && typeof fallbackProducer === 'function') {
+      console.warn(`Serving degraded lite response for ${key}:`, error.message);
+      return rememberLiteRead(key, await fallbackProducer(error));
+    }
+    throw error;
+  }
+}
+
+async function ensureDashboardCacheTablesOnce() {
+  if (dashboardCacheTablesReady) return true;
+  if (!dashboardCacheTablesPromise) {
+    dashboardCacheTablesPromise = ensureDashboardCacheTables()
+      .then((result) => {
+        dashboardCacheTablesReady = true;
+        return result;
+      })
+      .finally(() => {
+        dashboardCacheTablesPromise = null;
+      });
+  }
+  return dashboardCacheTablesPromise;
+}
+
 function getLitePool() {
   return getDatabasePool();
 }
@@ -724,6 +785,25 @@ async function readLiteUrlPage(filters) {
   };
 }
 
+function degradedUrlPage(filters, error) {
+  const limit = Math.max(1, Math.min(Number(filters.limit || 150), 500));
+  const offset = Math.max(0, Number(filters.offset || 0) || 0);
+  return {
+    rows: [],
+    total: filters.includeTotal === 'false' ? null : 0,
+    limit,
+    offset,
+    rowCount: 0,
+    hasMore: false,
+    lite: true,
+    cached: true,
+    degraded: true,
+    retryable: true,
+    warning: 'Database is busy; no previous URL snapshot is available in this web process yet.',
+    details: error.message
+  };
+}
+
 function nextDueForLitePriority(priorityTier) {
   if (priorityTier === 'Excluded') return null;
   const days = { P0: 1, P1: 7, P2: 15, P3: 30 }[priorityTier] ?? 30;
@@ -1033,12 +1113,9 @@ async function readLiteSourcesForUrlIds(urlIds) {
 async function readCachedUrlPage(filters) {
   const pool = getLitePool();
   if (!pool) return null;
-  await ensureDashboardCacheTables();
-  if (!(await cachedTableHasRows('dashboard_urls')) && process.env.AUTO_SYNC_DASHBOARD_CACHE === 'true') {
+  await ensureDashboardCacheTablesOnce();
+  if (process.env.AUTO_SYNC_DASHBOARD_CACHE === 'true' && !(await cachedTableHasRows('dashboard_urls'))) {
     await refreshDashboardCache();
-  }
-  if (!(await cachedTableHasRows('dashboard_urls'))) {
-    throw new Error('dashboard_urls cache is empty');
   }
 
   const limit = Math.max(1, Math.min(Number(filters.limit || 150), 500));
@@ -1127,7 +1204,7 @@ async function readCachedUrlPage(filters) {
 async function readCachedProperties() {
   const pool = getLitePool();
   if (!pool) return null;
-  await ensureDashboardCacheTables();
+  await ensureDashboardCacheTablesOnce();
   if (await cachedTableCount('dashboard_properties') === 0 && process.env.AUTO_SYNC_DASHBOARD_CACHE === 'true') {
     await refreshDashboardCache();
   }
@@ -1138,7 +1215,7 @@ async function readCachedProperties() {
 async function readCachedOverview() {
   const pool = getLitePool();
   if (!pool) return null;
-  await ensureDashboardCacheTables();
+  await ensureDashboardCacheTablesOnce();
   if (await cachedTableCount('dashboard_urls') === 0 && process.env.AUTO_SYNC_DASHBOARD_CACHE === 'true') {
     await refreshDashboardCache();
   }
@@ -1240,7 +1317,7 @@ async function readCachedOverview() {
 async function readCachedScaledDashboard() {
   const pool = getLitePool();
   if (!pool) return null;
-  await ensureDashboardCacheTables();
+  await ensureDashboardCacheTablesOnce();
   if (await cachedTableCount('dashboard_urls') === 0 && process.env.AUTO_SYNC_DASHBOARD_CACHE === 'true') {
     await refreshDashboardCache();
   }
@@ -1731,13 +1808,17 @@ async function handleLiteApi(pathname, parsed, request, response) {
   }
 
   if (pathname === '/api/overview') {
-    sendJson(response, 200, await readCachedOverview());
+    sendJson(response, 200, await readWithLiteStaleCache('overview', () => readCachedOverview()));
     return true;
   }
 
   if (pathname === '/api/urls') {
     const filters = Object.fromEntries(parsed.searchParams.entries());
-    const result = await readLiteUrlPage(filters);
+    const result = await readWithLiteStaleCache(
+      `urls:${parsed.searchParams.toString()}`,
+      () => readLiteUrlPage(filters),
+      (error) => degradedUrlPage(filters, error)
+    );
     result.rows = result.rows.map((url) => ({ ...url, health: null, sources: [], activeAlerts: [] }));
     sendJson(response, 200, result);
     return true;
@@ -1757,7 +1838,7 @@ async function handleLiteApi(pathname, parsed, request, response) {
   }
 
   if (detailMatch && request.method === 'GET') {
-    const detail = await readLiteUrlDetail(Number(detailMatch[1]));
+    const detail = await readWithLiteStaleCache(`url-detail:${detailMatch[1]}`, () => readLiteUrlDetail(Number(detailMatch[1])));
     if (!detail) {
       sendJson(response, 404, { error: 'URL not found' });
       return true;
@@ -1812,7 +1893,7 @@ async function handleLiteApi(pathname, parsed, request, response) {
 
   if (pathname === '/api/properties') {
     try {
-      sendJson(response, 200, await readCachedProperties());
+      sendJson(response, 200, await readWithLiteStaleCache('properties', () => readCachedProperties()));
     } catch (error) {
       console.error('Cached properties failed, falling back to app_state JSONB:', error.message);
       sendJson(response, 200, await readAppStateArray('properties'));
@@ -1837,25 +1918,27 @@ async function handleLiteApi(pathname, parsed, request, response) {
   }
 
   if (pathname === '/api/settings') {
-    const config = await loadEffectiveConfigForSettings();
-    const sitemapFetch = await safeSettingsValue('sitemapFetch', () => latestSitemapFetchState(), { error: 'unavailable' });
-    const sitemapFetchJobs = await safeSettingsValue('sitemapFetchJobs', () => listSitemapFetchJobs(5));
-    const csvImportJobs = await safeSettingsValue('csvImportJobs', () => listCsvImportJobs(5));
-    const googleAuth = await safeSettingsValue('googleAuth', () => googleAuthStatus(), { error: 'unavailable' });
-    sendJson(response, 200, {
-      sources: config.sources,
-      inspection: config.policy.inspection,
-      propertyMappings: config.propertyMappings,
-      cron: cronState,
-      sitemapFetch,
-      sitemapFetchJobs,
-      csvImportJobs,
-      importBatches: [],
-      openAI: openAiStatus(),
-      googleAuth,
-      oauthRedirectUri: `${publicOrigin(parsed.origin)}/auth/google/callback`,
-      lite: true
-    });
+    sendJson(response, 200, await readWithLiteStaleCache('settings', async () => {
+      const config = await loadEffectiveConfigForSettings();
+      const sitemapFetch = await safeSettingsValue('sitemapFetch', () => latestSitemapFetchState(), { error: 'unavailable' });
+      const sitemapFetchJobs = await safeSettingsValue('sitemapFetchJobs', () => listSitemapFetchJobs(5));
+      const csvImportJobs = await safeSettingsValue('csvImportJobs', () => listCsvImportJobs(5));
+      const googleAuth = await safeSettingsValue('googleAuth', () => googleAuthStatus(), { error: 'unavailable' });
+      return {
+        sources: config.sources,
+        inspection: config.policy.inspection,
+        propertyMappings: config.propertyMappings,
+        cron: cronState,
+        sitemapFetch,
+        sitemapFetchJobs,
+        csvImportJobs,
+        importBatches: [],
+        openAI: openAiStatus(),
+        googleAuth,
+        oauthRedirectUri: `${publicOrigin(parsed.origin)}/auth/google/callback`,
+        lite: true
+      };
+    }));
     return true;
   }
 
@@ -2084,7 +2167,7 @@ async function handleLiteApi(pathname, parsed, request, response) {
 
   if (pathname === '/api/scaled') {
     try {
-      sendJson(response, 200, await readCachedScaledDashboard());
+      sendJson(response, 200, await readWithLiteStaleCache('scaled', () => readCachedScaledDashboard()));
     } catch (error) {
       console.error('Cached scaled dashboard failed:', error.message);
       if (process.env.ENABLE_APP_STATE_URL_FALLBACK !== 'true') {
