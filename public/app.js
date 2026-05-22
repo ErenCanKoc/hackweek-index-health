@@ -31,6 +31,8 @@ function splitBulkUrls(value) {
 
 async function api(path, options = {}) {
   const timeoutMs = Number(options.timeoutMs ?? 20000);
+  const method = String(options.method ?? 'GET').toUpperCase();
+  const cacheKey = apiCacheKey(path, method);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   const { timeoutMs: _timeoutMs, ...fetchOptions } = options;
@@ -42,6 +44,8 @@ async function api(path, options = {}) {
       ...fetchOptions
     });
   } catch (error) {
+    const cached = readCachedApi(cacheKey);
+    if (cached) return cached;
     if (error.name === 'AbortError') {
       throw new Error(`${path} timed out after ${Math.round(timeoutMs / 1000)}s`);
     }
@@ -66,6 +70,8 @@ async function api(path, options = {}) {
         message = text.length > 500 ? `${text.slice(0, 500)}...` : text;
       }
     }
+    const cached = readCachedApi(cacheKey);
+    if (cached) return cached;
     throw new Error(`${path}: ${message}`);
   }
   const contentType = response.headers.get('content-type') ?? '';
@@ -73,9 +79,47 @@ async function api(path, options = {}) {
     const text = await response.text();
     const titleMatch = text.match(/<title[^>]*>(.*?)<\/title>/is);
     const title = titleMatch?.[1]?.replace(/\s+/g, ' ').trim();
+    const cached = readCachedApi(cacheKey);
+    if (cached) return cached;
     throw new Error(`${path}: expected JSON, got ${title || contentType || 'non-JSON response'}`);
   }
-  return response.json();
+  const payload = await response.json();
+  rememberApi(cacheKey, payload);
+  return payload;
+}
+
+function apiCacheKey(path, method) {
+  if (method !== 'GET') return null;
+  if (!String(path).startsWith('/api/')) return null;
+  return `api-cache:${path}`;
+}
+
+function rememberApi(key, payload) {
+  if (!key || payload === undefined) return;
+  try {
+    sessionStorage.setItem(key, JSON.stringify({
+      cachedAt: new Date().toISOString(),
+      payload
+    }));
+  } catch {}
+}
+
+function readCachedApi(key) {
+  if (!key) return null;
+  try {
+    const cached = JSON.parse(sessionStorage.getItem(key) || 'null');
+    if (!cached?.payload) return null;
+    const payload = cached.payload;
+    if (Array.isArray(payload)) return payload;
+    return {
+      ...payload,
+      stale: true,
+      cachedAt: cached.cachedAt,
+      warning: payload.warning || 'Using the latest successful response while the API recovers.'
+    };
+  } catch {
+    return null;
+  }
 }
 
 function setStatus(message) {

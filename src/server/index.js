@@ -980,6 +980,25 @@ function emergencyLiteApiPayload(pathname, parsed, error) {
   return null;
 }
 
+function shouldPreferLiteApi(pathname, method) {
+  if (!process.env.DATABASE_URL || method !== 'GET') return false;
+  return pathname === '/api/overview'
+    || pathname === '/api/urls'
+    || /^\/api\/urls\/\d+$/.test(pathname)
+    || pathname === '/api/jobs'
+    || pathname === '/api/job-diagnostics'
+    || pathname === '/api/alerts'
+    || pathname === '/api/properties'
+    || pathname === '/api/sitemaps'
+    || pathname === '/api/settings'
+    || pathname === '/api/settings/gsc-sites'
+    || pathname === '/api/csv-import-jobs'
+    || pathname === '/api/actions/csv-import/status'
+    || pathname === '/api/actions/fetch-sitemaps/status'
+    || pathname === '/api/scaled'
+    || pathname === '/api/roadmap';
+}
+
 function nextDueForLitePriority(priorityTier) {
   if (priorityTier === 'Excluded') return null;
   const days = { P0: 1, P1: 7, P2: 15, P3: 30 }[priorityTier] ?? 30;
@@ -3658,6 +3677,20 @@ const server = http.createServer(async (request, response) => {
     if (pathname === '/api/settings/csv-preview' && request.method === 'POST') {
       await handleCsvPreviewRequest(request, response);
       return;
+    }
+
+    if (shouldPreferLiteApi(pathname, request.method)) {
+      try {
+        const handledLite = await handleLiteApi(pathname, parsed, request, response);
+        if (handledLite) return;
+      } catch (error) {
+        console.error('Preferred lite API failed:', error);
+        const emergencyPayload = emergencyLiteApiPayload(pathname, parsed, error);
+        if (emergencyPayload) {
+          sendJson(response, 200, emergencyPayload);
+          return;
+        }
+      }
     }
 
     if (!context) {
