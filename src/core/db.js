@@ -28,7 +28,7 @@ function poolMax() {
   if (isWorkerProcess()) {
     return numericEnv('DATABASE_WORKER_POOL_MAX') ?? 1;
   }
-  return numericEnv('DATABASE_LITE_POOL_MAX', 'DATABASE_WEB_POOL_MAX') ?? 2;
+  return numericEnv('DATABASE_LITE_POOL_MAX', 'DATABASE_WEB_POOL_MAX') ?? 1;
 }
 
 export function getDatabasePool() {
