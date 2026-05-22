@@ -99,6 +99,15 @@ function urlPreviewLink(url, label = url) {
   return `<a class="url-preview-link" href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(label)}</a>`;
 }
 
+function jsonPayload(value, fallback = 'No JSON payload available.') {
+  if (value === undefined || value === null) return esc(fallback);
+  return esc(JSON.stringify(value, null, 2));
+}
+
+function inspectionPayload(item) {
+  return item?.rawJson ?? item?.rawResponse ?? item?.inspectionResult ?? item ?? null;
+}
+
 function fmtDate(value) {
   if (!value) return '-';
   return new Date(value).toLocaleString();
@@ -456,8 +465,8 @@ async function loadUrls() {
         <td>${fmtDate(url.nextInspectionDueAt)}</td>
         <td>
           <div class="row-actions">
-            <a class="small-button" href="${esc(url.normalizedUrl)}" target="_blank" rel="noopener noreferrer">Open</a>
             <button class="small-button" data-detail="${url.id}">${Number(state.openUrlId) === Number(url.id) ? 'Close' : 'Details'}</button>
+            <a class="small-button" href="${esc(url.normalizedUrl)}" target="_blank" rel="noopener noreferrer">Open URL</a>
             <button class="small-button" data-inspect-now="${url.id}">Inspect</button>
             <button class="small-button" data-exclude="${url.id}">${url.isManuallyExcluded ? 'Include' : 'Exclude'}</button>
           </div>
@@ -474,7 +483,8 @@ async function loadUrls() {
 }
 
 function detailRow(detail) {
-  const latest = detail.inspections[0];
+  const inspections = detail.inspections ?? [];
+  const latest = inspections[0] ?? null;
   const latestProperty = latest?.property?.propertyUrl ?? latest?.propertyId ?? '-';
   return `
     <tr class="accordion-row">
@@ -495,7 +505,7 @@ function detailRow(detail) {
           <div class="detail-body">
             <section class="detail-section">
               <h2>Inspection Log</h2>
-              ${table(['Date', 'Coverage', 'Verdict', 'Crawl', 'Property', 'JSON'], detail.inspections.map((item, index) => `
+              ${table(['Date', 'Coverage', 'Verdict', 'Crawl', 'Property', 'JSON'], inspections.map((item, index) => `
                 <tr>
                   <td>${fmtDate(item.inspectedAt)}</td>
                   <td>${esc(item.coverageState ?? '-')}</td>
@@ -505,14 +515,14 @@ function detailRow(detail) {
                   <td>
                     <details class="inline-json">
                       <summary>View</summary>
-                      <pre>${JSON.stringify(item.rawJson ?? {}, null, 2)}</pre>
+                      <pre>${jsonPayload(inspectionPayload(item))}</pre>
                     </details>
                   </td>
                 </tr>
               `))}
               <details open>
                 <summary>Latest Raw JSON · ${esc(latestProperty)}</summary>
-                <pre>${latest ? JSON.stringify(latest.rawJson ?? {}, null, 2) : 'No inspection result yet. Run Scheduler or Force GSC Test first.'}</pre>
+                <pre>${latest ? jsonPayload(inspectionPayload(latest)) : esc('No inspection result yet. Run Scheduler or Force GSC Test first.')}</pre>
               </details>
             </section>
             <section class="detail-section">
@@ -563,7 +573,7 @@ function detailRow(detail) {
               `))}
               <details open>
                 <summary>Technical diagnosis</summary>
-                <pre>${JSON.stringify(detail.technicalChecks[0] ?? {}, null, 2)}</pre>
+                <pre>${jsonPayload((detail.technicalChecks ?? [])[0] ?? {}, 'No technical check available.')}</pre>
               </details>
             </section>
           </div>
