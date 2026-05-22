@@ -224,7 +224,7 @@ function sourceSitemapCell(url) {
 }
 
 function statusCards(detail, latest) {
-  const inspectedDays = [...new Set(detail.inspections.map((item) => item.inspectionDate || String(item.inspectedAt ?? '').slice(0, 10)))];
+  const inspectedDays = [...new Set((detail.inspections ?? []).map((item) => item.inspectionDate || String(item.inspectedAt ?? '').slice(0, 10)))];
   const cards = [
     ['Current Status', detail.health?.currentHealthStatus ?? detail.url.currentHealthState ?? '-'],
     ['Severity', detail.health?.currentSeverity ?? '-'],
@@ -447,7 +447,7 @@ async function loadUrls() {
   document.querySelector('#url-pagination').innerHTML = renderPagination(meta);
   document.querySelector('#url-table').innerHTML = table(
     ['<label class="select-all-control"><input id="select-all-urls" type="checkbox"> All</label>', 'URL', 'Tier', 'State', 'Health', 'Category', 'Locale', 'Scaled', 'Next Due', 'Actions'],
-    urls.flatMap((url) => [`
+    urls.map((url) => `
       <tr>
         <td><input type="checkbox" data-select-url="${url.id}" ${state.selectedUrlIds.has(Number(url.id)) ? 'checked' : ''}></td>
         <td><code>${urlPreviewLink(url.normalizedUrl)}</code></td>
@@ -472,8 +472,9 @@ async function loadUrls() {
           </div>
         </td>
       </tr>
-    `, Number(state.openUrlId) === Number(url.id) && state.openUrlDetail ? detailRow(state.openUrlDetail) : ''])
+    `)
   );
+  renderUrlDetailPanel();
   const visibleUrlIds = urls.map((url) => Number(url.id));
   const selectAllUrls = document.querySelector('#select-all-urls');
   if (selectAllUrls && visibleUrlIds.length) {
@@ -482,14 +483,24 @@ async function loadUrls() {
   updateSelectedCount();
 }
 
-function detailRow(detail) {
+function renderUrlDetailPanel() {
+  const target = document.querySelector('#url-detail');
+  if (!target) return;
+  if (!state.openUrlDetail) {
+    target.classList.add('hidden');
+    target.innerHTML = '';
+    return;
+  }
+  target.classList.remove('hidden');
+  target.innerHTML = detailDrawer(state.openUrlDetail);
+}
+
+function detailDrawer(detail) {
   const inspections = detail.inspections ?? [];
   const latest = inspections[0] ?? null;
   const latestProperty = latest?.property?.propertyUrl ?? latest?.propertyId ?? '-';
   return `
-    <tr class="accordion-row">
-      <td colspan="10">
-        <div class="detail-drawer inline-detail">
+        <div class="detail-drawer-content">
           <div class="detail-head">
             <div>
               <h2>${urlPreviewLink(detail.url.normalizedUrl)}</h2>
@@ -578,20 +589,29 @@ function detailRow(detail) {
             </section>
           </div>
         </div>
-      </td>
-    </tr>
   `;
 }
 
 async function openDetail(id) {
-  if (Number(state.openUrlId) === Number(id)) {
-    state.openUrlId = null;
+  try {
+    if (Number(state.openUrlId) === Number(id)) {
+      state.openUrlId = null;
+      state.openUrlDetail = null;
+    } else {
+      state.openUrlId = Number(id);
+      setStatus('Loading URL inspection details...');
+      state.openUrlDetail = await api(`/api/urls/${id}`);
+    }
+    await loadUrls();
+    if (state.openUrlDetail) {
+      document.querySelector('#url-detail')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      setStatus(`Loaded URL inspection details at ${new Date().toLocaleTimeString()}`);
+    }
+  } catch (error) {
     state.openUrlDetail = null;
-  } else {
-    state.openUrlId = Number(id);
-    state.openUrlDetail = await api(`/api/urls/${id}`);
+    renderUrlDetailPanel();
+    setStatus(`Could not load URL inspection details: ${error.message}`);
   }
-  await loadUrls();
 }
 
 async function loadScaled() {
