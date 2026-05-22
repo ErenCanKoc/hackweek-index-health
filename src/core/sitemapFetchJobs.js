@@ -16,7 +16,7 @@ function getJobPool() {
     jobPool = new pg.Pool({
       connectionString: process.env.DATABASE_URL,
       ssl: process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: false },
-      max: 2,
+      max: Number(process.env.DATABASE_SITEMAP_JOB_POOL_MAX ?? 1),
       connectionTimeoutMillis: 5000,
       idleTimeoutMillis: 10000
     });

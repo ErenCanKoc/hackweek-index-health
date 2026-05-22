@@ -46,7 +46,7 @@ export class Store {
       sharedPgPool = new pg.Pool({
         connectionString: this.databaseUrl,
         ssl: process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: false },
-        max: Number(process.env.DATABASE_STORE_POOL_MAX ?? 2),
+        max: Number(process.env.DATABASE_STORE_POOL_MAX ?? 1),
         connectionTimeoutMillis: Number(process.env.DATABASE_CONNECTION_TIMEOUT_MS ?? 10000),
         idleTimeoutMillis: 10000
       });

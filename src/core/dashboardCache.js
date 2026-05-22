@@ -8,7 +8,7 @@ function getPool() {
     cachePool = new pg.Pool({
       connectionString: process.env.DATABASE_URL,
       ssl: process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: false },
-      max: Number(process.env.DATABASE_CACHE_POOL_MAX ?? 2),
+      max: Number(process.env.DATABASE_CACHE_POOL_MAX ?? 1),
       connectionTimeoutMillis: Number(process.env.DATABASE_CONNECTION_TIMEOUT_MS ?? 10000),
       idleTimeoutMillis: 10000
     });
@@ -65,10 +65,11 @@ export async function refreshDashboardCache() {
   const pool = getPool();
   if (!pool) return null;
   await ensureDashboardCacheTables();
-  await pool.query('BEGIN');
+  const client = await pool.connect();
   try {
-    await pool.query('TRUNCATE dashboard_urls, dashboard_properties');
-    const urlsResult = await pool.query(
+    await client.query('BEGIN');
+    await client.query('TRUNCATE dashboard_urls, dashboard_properties');
+    const urlsResult = await client.query(
       `
         INSERT INTO dashboard_urls (
           id, normalized_url, url, category, locale, current_priority_tier,
@@ -118,7 +119,7 @@ export async function refreshDashboardCache() {
       `,
       [appStateKey()]
     );
-    const propertiesResult = await pool.query(
+    const propertiesResult = await client.query(
       `
         INSERT INTO dashboard_properties (id, property_url, row_json, updated_at)
         SELECT
@@ -137,7 +138,7 @@ export async function refreshDashboardCache() {
       `,
       [appStateKey()]
     );
-    await pool.query(
+    await client.query(
       `
         WITH source_rows AS (
           SELECT
@@ -171,13 +172,15 @@ export async function refreshDashboardCache() {
       `,
       [appStateKey()]
     );
-    await pool.query('COMMIT');
+    await client.query('COMMIT');
     return {
       urls: urlsResult.rowCount,
       properties: propertiesResult.rowCount
     };
   } catch (error) {
-    await pool.query('ROLLBACK');
+    await client.query('ROLLBACK');
     throw error;
+  } finally {
+    client.release();
   }
 }

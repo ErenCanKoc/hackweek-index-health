@@ -8,7 +8,7 @@ function getPool() {
     lockPool = new pg.Pool({
       connectionString: process.env.DATABASE_URL,
       ssl: process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: false },
-      max: 2,
+      max: Number(process.env.DATABASE_LOCK_POOL_MAX ?? 1),
       connectionTimeoutMillis: Number(process.env.DATABASE_CONNECTION_TIMEOUT_MS ?? 10000),
       idleTimeoutMillis: 10000
     });

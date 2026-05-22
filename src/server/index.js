@@ -304,7 +304,7 @@ function getLitePool() {
     litePool = new pg.Pool({
       connectionString: process.env.DATABASE_URL,
       ssl: process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: false },
-      max: Number(process.env.DATABASE_LITE_POOL_MAX ?? 4),
+      max: Number(process.env.DATABASE_LITE_POOL_MAX ?? 2),
       connectionTimeoutMillis: Number(process.env.DATABASE_CONNECTION_TIMEOUT_MS ?? 10000),
       idleTimeoutMillis: 10000
     });
@@ -695,10 +695,11 @@ async function refreshDashboardCache() {
   if (!pool) return null;
   const appStateKey = process.env.APP_STATE_KEY || 'default';
   await ensureDashboardCacheTables();
-  await pool.query('BEGIN');
+  const client = await pool.connect();
   try {
-    await pool.query('TRUNCATE dashboard_urls, dashboard_properties');
-    const urlsResult = await pool.query(
+    await client.query('BEGIN');
+    await client.query('TRUNCATE dashboard_urls, dashboard_properties');
+    const urlsResult = await client.query(
       `
         INSERT INTO dashboard_urls (
           id,
@@ -761,7 +762,7 @@ async function refreshDashboardCache() {
       `,
       [appStateKey]
     );
-    const propertiesResult = await pool.query(
+    const propertiesResult = await client.query(
       `
         INSERT INTO dashboard_properties (id, property_url, row_json, updated_at)
         SELECT
@@ -780,7 +781,7 @@ async function refreshDashboardCache() {
       `,
       [appStateKey]
     );
-    await pool.query(
+    await client.query(
       `
         WITH source_rows AS (
           SELECT
@@ -814,14 +815,16 @@ async function refreshDashboardCache() {
       `,
       [appStateKey]
     );
-    await pool.query('COMMIT');
+    await client.query('COMMIT');
     return {
       urls: urlsResult.rowCount,
       properties: propertiesResult.rowCount
     };
   } catch (error) {
-    await pool.query('ROLLBACK');
+    await client.query('ROLLBACK');
     throw error;
+  } finally {
+    client.release();
   }
 }
 
