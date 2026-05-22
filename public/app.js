@@ -565,7 +565,7 @@ async function loadUrls() {
           <div class="row-actions">
             <button class="small-button" data-detail="${url.id}">${Number(state.openUrlId) === Number(url.id) ? 'Close' : 'Details'}</button>
             <a class="small-button" href="${esc(url.normalizedUrl)}" target="_blank" rel="noopener noreferrer">Open URL</a>
-            <button class="small-button" data-inspect-now="${url.id}">Inspect</button>
+            <button class="small-button" data-inspect-now="${url.id}" data-inspect-url="${esc(url.normalizedUrl ?? url.url)}">Inspect</button>
             <button class="small-button" data-exclude="${url.id}">${url.isManuallyExcluded ? 'Include' : 'Exclude'}</button>
           </div>
         </td>
@@ -1143,17 +1143,22 @@ document.addEventListener('click', async (event) => {
   if (inspectNow) {
     event.preventDefault();
     const id = Number(inspectNow.dataset.inspectNow);
+    const url = inspectNow.dataset.inspectUrl;
     setStatus('Inspecting selected URL...');
-    const result = await api('/api/actions/run-scheduler', {
+    const result = url ? await api('/api/actions/inspect-url-direct', {
+      method: 'POST',
+      timeoutMs: 45000,
+      body: JSON.stringify({ url, urlId: id })
+    }) : await api('/api/actions/run-scheduler', {
       method: 'POST',
       timeoutMs: 45000,
       body: JSON.stringify({ limit: 1, force: true, urlId: id })
     });
+    if (result.error) throw new Error(result.error);
     forgetApi(`/api/urls/${id}`);
     if (result.detail) {
       state.openUrlId = id;
       state.openUrlDetail = result.detail;
-      await loadUrls();
       document.querySelector('#url-detail')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     } else {
       await openDetail(id);

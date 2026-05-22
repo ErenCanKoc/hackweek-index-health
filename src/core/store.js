@@ -27,6 +27,44 @@ const DEFAULT_STATE = {
   csvImportJobs: []
 };
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function databaseRetryCount() {
+  const value = Number(process.env.DATABASE_RETRY_ATTEMPTS ?? 4);
+  return Number.isFinite(value) && value >= 0 ? value : 4;
+}
+
+function isRetryableDatabaseError(error) {
+  const message = String(error?.message ?? '');
+  return error?.code === 'EDBHANDLEREXITED'
+    || error?.code === 'ECONNRESET'
+    || error?.code === 'ECONNREFUSED'
+    || error?.code === 'ETIMEDOUT'
+    || error?.code === 'XX000'
+    || message.includes('connection to database closed')
+    || message.includes('Connection terminated')
+    || message.includes('timeout exceeded');
+}
+
+async function withDatabaseRetry(operation, label) {
+  const attempts = databaseRetryCount();
+  let lastError = null;
+  for (let attempt = 0; attempt <= attempts; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      if (!isRetryableDatabaseError(error) || attempt === attempts) throw error;
+      const delayMs = Math.min(5000, 500 * (2 ** attempt));
+      console.warn(`${label} failed (${error.code ?? error.message}); retrying in ${delayMs}ms`);
+      await sleep(delayMs);
+    }
+  }
+  throw lastError;
+}
+
 export class Store {
   constructor(filePath = path.join(process.cwd(), 'data/runtime/state.json')) {
     this.filePath = filePath;
@@ -44,19 +82,25 @@ export class Store {
   }
 
   async ensureAppStateTable() {
-    await this.getPool().query(`
-      CREATE TABLE IF NOT EXISTS app_state (
-        id TEXT PRIMARY KEY,
-        state JSONB NOT NULL,
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-      )
-    `);
+    await withDatabaseRetry(
+      () => this.getPool().query(`
+        CREATE TABLE IF NOT EXISTS app_state (
+          id TEXT PRIMARY KEY,
+          state JSONB NOT NULL,
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+      `),
+      'ensureAppStateTable'
+    );
   }
 
   async load() {
     if (this.usesPostgres) {
       await this.ensureAppStateTable();
-      const result = await this.getPool().query('SELECT state FROM app_state WHERE id = $1', [this.appStateKey]);
+      const result = await withDatabaseRetry(
+        () => this.getPool().query('SELECT state FROM app_state WHERE id = $1', [this.appStateKey]),
+        'load app_state'
+      );
       if (result.rows[0]?.state) {
         this.state = { ...structuredClone(DEFAULT_STATE), ...result.rows[0].state };
       } else {
@@ -96,14 +140,17 @@ export class Store {
     this.state.meta.updatedAt = nowIso();
     if (this.usesPostgres) {
       await this.ensureAppStateTable();
-      await this.getPool().query(
-        `
-          INSERT INTO app_state (id, state, updated_at)
-          VALUES ($1, $2::jsonb, now())
-          ON CONFLICT (id)
-          DO UPDATE SET state = EXCLUDED.state, updated_at = now()
-        `,
-        [this.appStateKey, JSON.stringify(this.state)]
+      await withDatabaseRetry(
+        () => this.getPool().query(
+          `
+            INSERT INTO app_state (id, state, updated_at)
+            VALUES ($1, $2::jsonb, now())
+            ON CONFLICT (id)
+            DO UPDATE SET state = EXCLUDED.state, updated_at = now()
+          `,
+          [this.appStateKey, JSON.stringify(this.state)]
+        ),
+        'save app_state'
       );
       return;
     }

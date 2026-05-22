@@ -56,7 +56,7 @@ import {
   recoverStaleCsvImportJobs,
   updateCsvImportJob
 } from '../core/csvImportJobs.js';
-import { getSearchConsoleAccessToken } from '../core/inspectionProvider.js';
+import { createInspectionProvider, getSearchConsoleAccessToken } from '../core/inspectionProvider.js';
 import { dateKey, daysBetween, normalizeUrl, nowIso, parseCsv } from '../core/utils.js';
 
 const PORT = Number(process.env.PORT ?? 3000);
@@ -348,13 +348,19 @@ function rememberLiteRead(key, payload) {
 }
 
 function liteReadTimeoutMs() {
-  const value = Number(process.env.LITE_READ_TIMEOUT_MS ?? 2500);
-  if (!Number.isFinite(value) || value <= 0) return 2500;
+  const value = Number(process.env.LITE_READ_TIMEOUT_MS ?? 8000);
+  if (!Number.isFinite(value) || value <= 0) return 8000;
   return Math.max(500, value);
 }
 
 function liteReadTimeoutError(key, timeoutMs) {
   const error = new Error(`Lite API read for ${key} exceeded ${timeoutMs}ms`);
+  error.code = 'EDATABASEBUSY';
+  return error;
+}
+
+function liteSnapshotMissingError(message) {
+  const error = new Error(message);
   error.code = 'EDATABASEBUSY';
   return error;
 }
@@ -423,6 +429,22 @@ function getLitePool() {
 
 function appStateKey() {
   return process.env.APP_STATE_KEY || 'default';
+}
+
+function normalizedUrlSearchTerm(value, { lower = false } = {}) {
+  const query = String(value ?? '').trim();
+  if (!query) return null;
+  let normalized = query;
+  try {
+    normalized = normalizeUrl(query);
+  } catch {
+    normalized = query;
+  }
+  return lower ? normalized.toLowerCase() : normalized;
+}
+
+function isUrlLikeSearch(value) {
+  return /^https?:\/\//i.test(String(value ?? '').trim());
 }
 
 async function patchAppStateJson(pathSegments, value) {
@@ -494,6 +516,13 @@ async function readAppStateArrayByNumber(key, field, value, { limit = null, reve
 async function readLiteUrlDetail(id) {
   const pool = getLitePool();
   if (!pool) return null;
+  const cachedDetail = await readCachedUrlDetail(id).catch((error) => {
+    if (error.code !== '42P01') throw error;
+    return null;
+  });
+  if (cachedDetail) return cachedDetail;
+  throw liteSnapshotMissingError(`dashboard_url_details snapshot is missing for url ${id}. Run Settings -> Sync Cache.`);
+
   const appStateKey = process.env.APP_STATE_KEY || 'default';
   const result = await pool.query(
     `
@@ -614,6 +643,26 @@ async function readLiteUrlDetail(id) {
     propertyResolution: { selectedPropertyUrl: 'lite mode', candidates: [] },
     lite: true
   };
+}
+
+function attachProperty(row, propertyById) {
+  const item = row?.row_json ?? row ?? {};
+  return {
+    ...item,
+    property: propertyById.get(Number(item.propertyId)) ?? null
+  };
+}
+
+async function readCachedUrlDetail(id) {
+  const pool = getLitePool();
+  if (!pool) return null;
+  const urlId = Number(id);
+  const snapshot = await pool.query('SELECT payload FROM dashboard_url_details WHERE url_id = $1', [urlId]).catch((error) => {
+    if (error.code !== '42P01') throw error;
+    return null;
+  });
+  if (snapshot?.rows[0]?.payload) return snapshot.rows[0].payload;
+  return null;
 }
 
 async function readAppStateMeta() {
@@ -1106,6 +1155,8 @@ async function ensureDashboardCacheTables() {
     DROP INDEX IF EXISTS idx_dashboard_urls_normalized;
     DROP INDEX IF EXISTS idx_dashboard_urls_source_text;
 
+    CREATE INDEX IF NOT EXISTS idx_dashboard_urls_normalized_url
+      ON dashboard_urls (normalized_url text_pattern_ops);
     CREATE INDEX IF NOT EXISTS idx_dashboard_urls_priority
       ON dashboard_urls (current_priority_tier, id);
     CREATE INDEX IF NOT EXISTS idx_dashboard_urls_category
@@ -1119,6 +1170,77 @@ async function ensureDashboardCacheTables() {
       row_json JSONB NOT NULL,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
+
+    CREATE TABLE IF NOT EXISTS dashboard_inspection_jobs (
+      id BIGINT PRIMARY KEY,
+      url_id BIGINT,
+      property_id BIGINT,
+      status TEXT,
+      reason TEXT,
+      due_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ,
+      updated_at TIMESTAMPTZ,
+      last_error TEXT,
+      row_json JSONB NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS dashboard_inspection_results (
+      id BIGINT PRIMARY KEY,
+      url_id BIGINT,
+      property_id BIGINT,
+      inspected_at TIMESTAMPTZ,
+      row_json JSONB NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS dashboard_alerts (
+      id BIGINT PRIMARY KEY,
+      url_id BIGINT,
+      status TEXT,
+      alert_type TEXT,
+      severity TEXT,
+      created_at TIMESTAMPTZ,
+      updated_at TIMESTAMPTZ,
+      row_json JSONB NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS dashboard_technical_checks (
+      id BIGINT PRIMARY KEY,
+      url_id BIGINT,
+      created_at TIMESTAMPTZ,
+      row_json JSONB NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS dashboard_health_statuses (
+      url_id BIGINT PRIMARY KEY,
+      row_json JSONB NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS dashboard_snapshots (
+      key TEXT PRIMARY KEY,
+      payload JSONB NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
+    CREATE TABLE IF NOT EXISTS dashboard_url_details (
+      url_id BIGINT PRIMARY KEY,
+      payload JSONB NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_dashboard_inspection_jobs_url
+      ON dashboard_inspection_jobs (url_id, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_dashboard_inspection_jobs_status
+      ON dashboard_inspection_jobs (status, due_at);
+    CREATE INDEX IF NOT EXISTS idx_dashboard_inspection_results_url
+      ON dashboard_inspection_results (url_id, inspected_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_dashboard_inspection_results_inspected_at
+      ON dashboard_inspection_results (inspected_at);
+    CREATE INDEX IF NOT EXISTS idx_dashboard_alerts_url
+      ON dashboard_alerts (url_id, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_dashboard_alerts_status_severity
+      ON dashboard_alerts (status, severity);
+    CREATE INDEX IF NOT EXISTS idx_dashboard_technical_checks_url
+      ON dashboard_technical_checks (url_id, id DESC);
   `);
   return true;
 }
@@ -1131,7 +1253,18 @@ async function refreshDashboardCache() {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    await client.query('TRUNCATE dashboard_urls, dashboard_properties');
+    await client.query(`
+      TRUNCATE
+        dashboard_urls,
+        dashboard_properties,
+        dashboard_inspection_jobs,
+        dashboard_inspection_results,
+        dashboard_alerts,
+        dashboard_technical_checks,
+        dashboard_health_statuses,
+        dashboard_snapshots,
+        dashboard_url_details
+    `);
     const urlsResult = await client.query(
       `
         INSERT INTO dashboard_urls (
@@ -1223,6 +1356,122 @@ async function refreshDashboardCache() {
       `,
       [appStateKey]
     );
+    const jobsResult = await client.query(
+      `
+        INSERT INTO dashboard_inspection_jobs (
+          id, url_id, property_id, status, reason, due_at, created_at, updated_at, last_error, row_json
+        )
+        SELECT
+          (elem ->> 'id')::bigint,
+          NULLIF(elem ->> 'urlId', '')::bigint,
+          NULLIF(elem ->> 'propertyId', '')::bigint,
+          elem ->> 'status',
+          elem ->> 'reason',
+          NULLIF(elem ->> 'dueAt', '')::timestamptz,
+          NULLIF(elem ->> 'createdAt', '')::timestamptz,
+          NULLIF(elem ->> 'updatedAt', '')::timestamptz,
+          elem ->> 'lastError',
+          elem
+        FROM app_state,
+          jsonb_array_elements(COALESCE(state -> 'inspectionJobs', '[]'::jsonb)) AS rows(elem)
+        WHERE app_state.id = $1
+          AND elem ? 'id'
+        ON CONFLICT (id) DO UPDATE
+          SET url_id = EXCLUDED.url_id,
+              property_id = EXCLUDED.property_id,
+              status = EXCLUDED.status,
+              reason = EXCLUDED.reason,
+              due_at = EXCLUDED.due_at,
+              created_at = EXCLUDED.created_at,
+              updated_at = EXCLUDED.updated_at,
+              last_error = EXCLUDED.last_error,
+              row_json = EXCLUDED.row_json
+      `,
+      [appStateKey]
+    );
+    const inspectionsResult = await client.query(
+      `
+        INSERT INTO dashboard_inspection_results (id, url_id, property_id, inspected_at, row_json)
+        SELECT
+          (elem ->> 'id')::bigint,
+          NULLIF(elem ->> 'urlId', '')::bigint,
+          NULLIF(elem ->> 'propertyId', '')::bigint,
+          NULLIF(elem ->> 'inspectedAt', '')::timestamptz,
+          elem
+        FROM app_state,
+          jsonb_array_elements(COALESCE(state -> 'inspectionResults', '[]'::jsonb)) AS rows(elem)
+        WHERE app_state.id = $1
+          AND elem ? 'id'
+        ON CONFLICT (id) DO UPDATE
+          SET url_id = EXCLUDED.url_id,
+              property_id = EXCLUDED.property_id,
+              inspected_at = EXCLUDED.inspected_at,
+              row_json = EXCLUDED.row_json
+      `,
+      [appStateKey]
+    );
+    const alertsResult = await client.query(
+      `
+        INSERT INTO dashboard_alerts (id, url_id, status, alert_type, severity, created_at, updated_at, row_json)
+        SELECT
+          (elem ->> 'id')::bigint,
+          NULLIF(elem ->> 'urlId', '')::bigint,
+          elem ->> 'status',
+          elem ->> 'alertType',
+          elem ->> 'severity',
+          NULLIF(elem ->> 'createdAt', '')::timestamptz,
+          NULLIF(elem ->> 'updatedAt', '')::timestamptz,
+          elem
+        FROM app_state,
+          jsonb_array_elements(COALESCE(state -> 'alerts', '[]'::jsonb)) AS rows(elem)
+        WHERE app_state.id = $1
+          AND elem ? 'id'
+        ON CONFLICT (id) DO UPDATE
+          SET url_id = EXCLUDED.url_id,
+              status = EXCLUDED.status,
+              alert_type = EXCLUDED.alert_type,
+              severity = EXCLUDED.severity,
+              created_at = EXCLUDED.created_at,
+              updated_at = EXCLUDED.updated_at,
+              row_json = EXCLUDED.row_json
+      `,
+      [appStateKey]
+    );
+    await client.query(
+      `
+        INSERT INTO dashboard_technical_checks (id, url_id, created_at, row_json)
+        SELECT
+          (elem ->> 'id')::bigint,
+          NULLIF(elem ->> 'urlId', '')::bigint,
+          NULLIF(COALESCE(elem ->> 'checkedAt', elem ->> 'createdAt'), '')::timestamptz,
+          elem
+        FROM app_state,
+          jsonb_array_elements(COALESCE(state -> 'technicalChecks', '[]'::jsonb)) AS rows(elem)
+        WHERE app_state.id = $1
+          AND elem ? 'id'
+        ON CONFLICT (id) DO UPDATE
+          SET url_id = EXCLUDED.url_id,
+              created_at = EXCLUDED.created_at,
+              row_json = EXCLUDED.row_json
+      `,
+      [appStateKey]
+    );
+    await client.query(
+      `
+        INSERT INTO dashboard_health_statuses (url_id, row_json)
+        SELECT DISTINCT ON ((elem ->> 'urlId')::bigint)
+          (elem ->> 'urlId')::bigint,
+          elem
+        FROM app_state,
+          jsonb_array_elements(COALESCE(state -> 'healthStatuses', '[]'::jsonb)) WITH ORDINALITY AS rows(elem, ord)
+        WHERE app_state.id = $1
+          AND elem ? 'urlId'
+        ORDER BY (elem ->> 'urlId')::bigint, ord DESC
+        ON CONFLICT (url_id) DO UPDATE
+          SET row_json = EXCLUDED.row_json
+      `,
+      [appStateKey]
+    );
     await client.query(
       `
         WITH source_rows AS (
@@ -1257,10 +1506,14 @@ async function refreshDashboardCache() {
       `,
       [appStateKey]
     );
+    await rebuildDashboardSnapshots(client);
     await client.query('COMMIT');
     return {
       urls: urlsResult.rowCount,
-      properties: propertiesResult.rowCount
+      properties: propertiesResult.rowCount,
+      jobs: jobsResult.rowCount,
+      inspections: inspectionsResult.rowCount,
+      alerts: alertsResult.rowCount
     };
   } catch (error) {
     await client.query('ROLLBACK');
@@ -1268,6 +1521,182 @@ async function refreshDashboardCache() {
   } finally {
     client.release();
   }
+}
+
+async function rebuildDashboardSnapshots(client) {
+  const today = dateKey();
+  await client.query(
+    `
+      INSERT INTO dashboard_snapshots (key, payload, updated_at)
+      WITH active_urls AS (
+        SELECT *
+        FROM dashboard_urls
+        WHERE is_active = true
+          AND is_manually_excluded = false
+      ),
+      totals AS (
+        SELECT
+          COUNT(*)::int AS active_total,
+          COUNT(*) FILTER (WHERE current_index_state IN ('submitted_and_indexed', 'stable_indexed'))::int AS indexed_total,
+          COUNT(*) FILTER (WHERE is_scaled_content = true)::int AS scaled_total,
+          COUNT(*) FILTER (
+            WHERE is_scaled_content = true
+              AND current_index_state IN ('submitted_and_indexed', 'stable_indexed')
+          )::int AS scaled_indexed_total,
+          COUNT(*) FILTER (WHERE current_priority_tier = 'P0')::int AS p0_total,
+          COUNT(*) FILTER (
+            WHERE current_priority_tier = 'P0'
+              AND current_index_state IN ('submitted_and_indexed', 'stable_indexed')
+          )::int AS p0_indexed_total,
+          COUNT(*) FILTER (WHERE current_index_state IN ('index_loss_suspected', 'index_lost_confirmed'))::int AS index_loss_total,
+          COUNT(*) FILTER (WHERE next_inspection_due_at IS NOT NULL AND next_inspection_due_at < now())::int AS overdue_total,
+          COUNT(*) FILTER (WHERE last_seen_at IS NOT NULL AND last_seen_at >= now() - interval '30 days')::int AS monthly_covered
+        FROM active_urls
+      ),
+      categories AS (
+        SELECT COALESCE(category, 'unknown') AS category,
+          COUNT(*)::int AS total,
+          COUNT(*) FILTER (WHERE current_index_state IN ('submitted_and_indexed', 'stable_indexed'))::int AS indexed,
+          COUNT(*) FILTER (WHERE current_index_state IN ('index_loss_suspected', 'index_lost_confirmed', 'not_indexed', 'canonical_mismatch'))::int AS critical
+        FROM active_urls
+        GROUP BY COALESCE(category, 'unknown')
+      ),
+      inspection_today AS (
+        SELECT COUNT(*)::int AS inspected_today
+        FROM dashboard_inspection_results
+        WHERE inspected_at::date = $1::date
+      ),
+      quota AS (
+        SELECT COALESCE(SUM(COALESCE((row_json ->> 'dailyQuotaUsed')::int, 0)), 0)::int AS quota_used_today
+        FROM dashboard_properties
+      ),
+      critical_alerts AS (
+        SELECT COUNT(*)::int AS open_critical_alerts
+        FROM dashboard_alerts
+        WHERE status = 'active'
+          AND COALESCE(alert_type, '') <> 'recovered'
+          AND severity IN ('critical', 'incident')
+      ),
+      overview AS (
+        SELECT
+          totals.*,
+          inspection_today.inspected_today,
+          quota.quota_used_today,
+          critical_alerts.open_critical_alerts,
+          COALESCE((SELECT jsonb_agg(categories ORDER BY category) FROM categories), '[]'::jsonb) AS category_health
+        FROM totals, inspection_today, quota, critical_alerts
+      )
+      SELECT
+        'overview',
+        jsonb_build_object(
+          'inspectedToday', COALESCE(inspected_today, 0),
+          'quotaUsedToday', COALESCE(quota_used_today, 0),
+          'monthlyCoveragePercent', CASE WHEN active_total > 0 THEN ROUND((monthly_covered::numeric / active_total) * 100)::int ELSE 0 END,
+          'indexRate', CASE WHEN active_total > 0 THEN ROUND((indexed_total::numeric / active_total) * 100)::int ELSE 0 END,
+          'indexLossCount', COALESCE(index_loss_total, 0),
+          'scaledContentIndexRate', CASE WHEN scaled_total > 0 THEN ROUND((scaled_indexed_total::numeric / scaled_total) * 100)::int ELSE 0 END,
+          'p0IndexRate', CASE WHEN p0_total > 0 THEN ROUND((p0_indexed_total::numeric / p0_total) * 100)::int ELSE 0 END,
+          'averageTimeToIndex', 0,
+          'openCriticalAlerts', COALESCE(open_critical_alerts, 0),
+          'overdueUrlCount', COALESCE(overdue_total, 0),
+          'categoryHealth', COALESCE(category_health, '[]'::jsonb),
+          'lite', true,
+          'cached', true,
+          'snapshot', true
+        ),
+        now()
+      FROM overview
+      ON CONFLICT (key) DO UPDATE
+        SET payload = EXCLUDED.payload,
+            updated_at = EXCLUDED.updated_at
+    `,
+    [today]
+  );
+
+  await client.query(`
+    INSERT INTO dashboard_url_details (url_id, payload, updated_at)
+    SELECT
+      url.id,
+      jsonb_build_object(
+        'url', jsonb_build_object(
+          'id', url.id,
+          'normalizedUrl', url.normalized_url,
+          'url', url.url,
+          'category', url.category,
+          'locale', url.locale,
+          'currentPriorityTier', url.current_priority_tier,
+          'currentIndexState', url.current_index_state,
+          'currentHealthState', url.current_health_state,
+          'isScaledContent', url.is_scaled_content,
+          'scaledContentType', url.scaled_content_type,
+          'isManuallyExcluded', url.is_manually_excluded,
+          'isActive', url.is_active,
+          'nextInspectionDueAt', url.next_inspection_due_at,
+          'firstSeenAt', url.first_seen_at,
+          'firstIndexedAt', url.first_indexed_at,
+          'lastInspectedAt', url.last_inspected_at,
+          'lastSeenAt', url.last_seen_at
+        ),
+        'sources', COALESCE(url.source_sitemaps, '[]'::jsonb),
+        'prioritySnapshots', '[]'::jsonb,
+        'inspections', COALESCE(inspections.rows, '[]'::jsonb),
+        'transitions', '[]'::jsonb,
+        'jobs', COALESCE(jobs.rows, '[]'::jsonb),
+        'technicalChecks', COALESCE(checks.rows, '[]'::jsonb),
+        'alerts', COALESCE(alerts.rows, '[]'::jsonb),
+        'health', health.row_json,
+        'propertyResolution', jsonb_build_object('selectedPropertyUrl', 'snapshot', 'candidates', '[]'::jsonb),
+        'lite', true,
+        'cached', true,
+        'snapshot', true
+      ),
+      now()
+    FROM dashboard_urls url
+    LEFT JOIN LATERAL (
+      SELECT jsonb_agg(row_json ORDER BY inspected_at DESC NULLS LAST, id DESC) AS rows
+      FROM (
+        SELECT row_json, inspected_at, id
+        FROM dashboard_inspection_results
+        WHERE url_id = url.id
+        ORDER BY inspected_at DESC NULLS LAST, id DESC
+        LIMIT 20
+      ) limited
+    ) inspections ON true
+    LEFT JOIN LATERAL (
+      SELECT jsonb_agg(row_json ORDER BY id DESC) AS rows
+      FROM (
+        SELECT row_json, id
+        FROM dashboard_inspection_jobs
+        WHERE url_id = url.id
+        ORDER BY id DESC
+        LIMIT 20
+      ) limited
+    ) jobs ON true
+    LEFT JOIN LATERAL (
+      SELECT jsonb_agg(row_json ORDER BY id DESC) AS rows
+      FROM (
+        SELECT row_json, id
+        FROM dashboard_technical_checks
+        WHERE url_id = url.id
+        ORDER BY id DESC
+        LIMIT 10
+      ) limited
+    ) checks ON true
+    LEFT JOIN LATERAL (
+      SELECT jsonb_agg(row_json ORDER BY id DESC) AS rows
+      FROM (
+        SELECT row_json, id
+        FROM dashboard_alerts
+        WHERE url_id = url.id
+        ORDER BY id DESC
+        LIMIT 20
+      ) limited
+    ) alerts ON true
+    LEFT JOIN dashboard_health_statuses health ON health.url_id = url.id
+    ON CONFLICT (url_id) DO UPDATE
+      SET payload = EXCLUDED.payload,
+          updated_at = EXCLUDED.updated_at
+  `);
 }
 
 async function cachedTableCount(tableName) {
@@ -1339,7 +1768,15 @@ async function readCachedUrlPage(filters) {
   if (filters.locale) where.push(`locale = ${addParam(filters.locale)}`);
   if (filters.scaled === 'true') where.push('is_scaled_content = true');
   if (filters.scaled === 'false') where.push('is_scaled_content = false');
-  if (filters.q) where.push(`LOWER(normalized_url) LIKE ${addParam(`%${String(filters.q).toLowerCase()}%`)}`);
+  if (filters.q) {
+    if (isUrlLikeSearch(filters.q)) {
+      const q = normalizedUrlSearchTerm(filters.q);
+      where.push(`normalized_url LIKE ${addParam(`${q}%`)}`);
+    } else {
+      const q = normalizedUrlSearchTerm(filters.q, { lower: true });
+      where.push(`LOWER(normalized_url) LIKE ${addParam(`%${q}%`)}`);
+    }
+  }
   if (filters.afterId) where.push(`id > ${addParam(Number(filters.afterId) || 0)}`);
 
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
@@ -1410,123 +1847,114 @@ async function readCachedProperties() {
   const pool = getLitePool();
   if (!pool) return null;
   await ensureDashboardCacheTablesOnce();
-  if (await cachedTableCount('dashboard_properties') === 0 && process.env.AUTO_SYNC_DASHBOARD_CACHE === 'true') {
+  if (process.env.AUTO_SYNC_DASHBOARD_CACHE === 'true' && !(await cachedTableHasRows('dashboard_properties'))) {
     await refreshDashboardCache();
   }
   const result = await pool.query('SELECT row_json FROM dashboard_properties ORDER BY property_url ASC');
   return result.rows.map((row) => row.row_json);
 }
 
-async function readCachedOverview() {
+async function readCachedJobs(limit = 200) {
   const pool = getLitePool();
   if (!pool) return null;
   await ensureDashboardCacheTablesOnce();
-  if (await cachedTableCount('dashboard_urls') === 0 && process.env.AUTO_SYNC_DASHBOARD_CACHE === 'true') {
-    await refreshDashboardCache();
-  }
-  if (await cachedTableCount('dashboard_urls') === 0) {
-    throw new Error('dashboard_urls cache is empty. Run /api/settings/maintenance/sync-cache after heavy imports.');
-  }
-  const appStateKey = process.env.APP_STATE_KEY || 'default';
-  const today = dateKey();
   const result = await pool.query(
-    `
-      WITH active_urls AS (
-        SELECT *
-        FROM dashboard_urls
-        WHERE is_active = true
-          AND is_manually_excluded = false
-      ),
-      totals AS (
-        SELECT
-          COUNT(*)::int AS active_total,
-          COUNT(*) FILTER (WHERE current_index_state IN ('submitted_and_indexed', 'stable_indexed'))::int AS indexed_total,
-          COUNT(*) FILTER (WHERE is_scaled_content = true)::int AS scaled_total,
-          COUNT(*) FILTER (
-            WHERE is_scaled_content = true
-              AND current_index_state IN ('submitted_and_indexed', 'stable_indexed')
-          )::int AS scaled_indexed_total,
-          COUNT(*) FILTER (WHERE current_priority_tier = 'P0')::int AS p0_total,
-          COUNT(*) FILTER (
-            WHERE current_priority_tier = 'P0'
-              AND current_index_state IN ('submitted_and_indexed', 'stable_indexed')
-          )::int AS p0_indexed_total,
-          COUNT(*) FILTER (WHERE current_index_state IN ('index_loss_suspected', 'index_lost_confirmed'))::int AS index_loss_total,
-          COUNT(*) FILTER (WHERE next_inspection_due_at IS NOT NULL AND next_inspection_due_at < now())::int AS overdue_total,
-          COUNT(*) FILTER (WHERE last_seen_at IS NOT NULL AND last_seen_at >= now() - interval '30 days')::int AS monthly_covered
-        FROM active_urls
-      ),
-      categories AS (
-        SELECT COALESCE(category, 'unknown') AS category,
-          COUNT(*)::int AS total,
-          COUNT(*) FILTER (WHERE current_index_state IN ('submitted_and_indexed', 'stable_indexed'))::int AS indexed,
-          COUNT(*) FILTER (WHERE current_index_state IN ('index_loss_suspected', 'index_lost_confirmed', 'not_indexed', 'canonical_mismatch'))::int AS critical
-        FROM active_urls
-        GROUP BY COALESCE(category, 'unknown')
-      ),
-      state AS (
-        SELECT state
-        FROM app_state
-        WHERE id = $1
-      ),
-      inspection_today AS (
-        SELECT COUNT(*)::int AS inspected_today
-        FROM state,
-          jsonb_array_elements(COALESCE(state -> 'inspectionResults', '[]'::jsonb)) AS rows(elem)
-        WHERE LEFT(COALESCE(elem ->> 'inspectedAt', ''), 10) = $2
-      ),
-      quota AS (
-        SELECT COALESCE(SUM(COALESCE((elem ->> 'dailyQuotaUsed')::int, 0)), 0)::int AS quota_used_today
-        FROM state,
-          jsonb_array_elements(COALESCE(state -> 'properties', '[]'::jsonb)) AS rows(elem)
-      ),
-      critical_alerts AS (
-        SELECT COUNT(*)::int AS open_critical_alerts
-        FROM state,
-          jsonb_array_elements(COALESCE(state -> 'alerts', '[]'::jsonb)) AS rows(elem)
-        WHERE elem ->> 'status' = 'active'
-          AND COALESCE(elem ->> 'alertType', '') <> 'recovered'
-          AND elem ->> 'severity' IN ('critical', 'incident')
-      )
-      SELECT
-        totals.*,
-        inspection_today.inspected_today,
-        quota.quota_used_today,
-        critical_alerts.open_critical_alerts,
-        COALESCE((SELECT jsonb_agg(categories ORDER BY category) FROM categories), '[]'::jsonb) AS category_health
-      FROM totals, inspection_today, quota, critical_alerts
-    `,
-    [appStateKey, today]
+    'SELECT row_json FROM dashboard_inspection_jobs ORDER BY id DESC LIMIT $1',
+    [Math.max(1, Math.min(Number(limit) || 200, 500))]
   );
-  const row = result.rows[0] ?? {};
-  const activeTotal = Number(row.active_total ?? 0);
-  const scaledTotal = Number(row.scaled_total ?? 0);
-  const p0Total = Number(row.p0_total ?? 0);
-  return {
-    inspectedToday: Number(row.inspected_today ?? 0),
-    quotaUsedToday: Number(row.quota_used_today ?? 0),
-    monthlyCoveragePercent: activeTotal ? Math.round((Number(row.monthly_covered ?? 0) / activeTotal) * 100) : 0,
-    indexRate: activeTotal ? Math.round((Number(row.indexed_total ?? 0) / activeTotal) * 100) : 0,
-    indexLossCount: Number(row.index_loss_total ?? 0),
-    scaledContentIndexRate: scaledTotal ? Math.round((Number(row.scaled_indexed_total ?? 0) / scaledTotal) * 100) : 0,
-    p0IndexRate: p0Total ? Math.round((Number(row.p0_indexed_total ?? 0) / p0Total) * 100) : 0,
-    averageTimeToIndex: 0,
-    openCriticalAlerts: Number(row.open_critical_alerts ?? 0),
-    overdueUrlCount: Number(row.overdue_total ?? 0),
-    categoryHealth: row.category_health ?? [],
-    lite: true,
-    cached: true
-  };
+  return result.rows.map((row) => row.row_json);
+}
+
+async function readCachedJobDiagnostics() {
+  const pool = getLitePool();
+  if (!pool) return null;
+  await ensureDashboardCacheTablesOnce();
+  const client = await pool.connect();
+  try {
+    const summaryResult = await client.query(`
+      SELECT
+        COUNT(*)::int AS total,
+        COUNT(*) FILTER (WHERE status = 'pending')::int AS pending,
+        COUNT(*) FILTER (WHERE status = 'pending' AND due_at <= now())::int AS due_pending,
+        COUNT(*) FILTER (WHERE status = 'running')::int AS running,
+        COUNT(*) FILTER (WHERE status = 'completed')::int AS completed,
+        COUNT(*) FILTER (WHERE status = 'skipped')::int AS skipped,
+        COUNT(*) FILTER (WHERE status = 'failed')::int AS failed
+      FROM dashboard_inspection_jobs
+    `);
+    const statusResult = await client.query(`
+      SELECT COALESCE(status, 'unknown') AS name, COUNT(*)::int AS count
+      FROM dashboard_inspection_jobs
+      GROUP BY COALESCE(status, 'unknown')
+      ORDER BY count DESC
+    `);
+    const reasonResult = await client.query(`
+      SELECT COALESCE(reason, 'unknown') AS name, COUNT(*)::int AS count
+      FROM dashboard_inspection_jobs
+      GROUP BY COALESCE(reason, 'unknown')
+      ORDER BY count DESC
+    `);
+    const errorResult = await client.query(`
+      SELECT last_error AS name, COUNT(*)::int AS count
+      FROM dashboard_inspection_jobs
+      WHERE last_error IS NOT NULL AND last_error <> ''
+      GROUP BY last_error
+      ORDER BY count DESC
+    `);
+    const problemResult = await client.query(`
+      SELECT row_json
+      FROM dashboard_inspection_jobs
+      WHERE status IN ('failed', 'skipped', 'pending')
+        AND (last_error IS NOT NULL OR due_at <= now())
+      ORDER BY COALESCE(updated_at, created_at, due_at) DESC NULLS LAST, id DESC
+      LIMIT 20
+    `);
+    const propertiesResult = await client.query('SELECT id, row_json FROM dashboard_properties');
+    const row = summaryResult.rows[0] ?? {};
+    const propertyById = new Map(propertiesResult.rows.map((property) => [Number(property.id), property.row_json]));
+    return {
+      summary: {
+        total: Number(row.total ?? 0),
+        pending: Number(row.pending ?? 0),
+        duePending: Number(row.due_pending ?? 0),
+        running: Number(row.running ?? 0),
+        completed: Number(row.completed ?? 0),
+        skipped: Number(row.skipped ?? 0),
+        failed: Number(row.failed ?? 0)
+      },
+      byStatus: statusResult.rows,
+      byReason: reasonResult.rows,
+      byError: errorResult.rows,
+      recentProblemJobs: problemResult.rows.map((item) => attachProperty(item, propertyById)),
+      lite: true,
+      cached: true
+    };
+  } finally {
+    client.release();
+  }
+}
+
+async function readCachedOverview() {
+  const pool = getLitePool();
+  if (!pool) return null;
+  const snapshot = await pool.query("SELECT payload FROM dashboard_snapshots WHERE key = 'overview'").catch((error) => {
+    if (error.code !== '42P01') throw error;
+    return null;
+  });
+  if (snapshot?.rows[0]?.payload) return snapshot.rows[0].payload;
+  throw liteSnapshotMissingError('dashboard_snapshots overview snapshot is missing. Run Settings -> Sync Cache.');
 }
 
 async function readCachedScaledDashboard() {
   const pool = getLitePool();
   if (!pool) return null;
   await ensureDashboardCacheTablesOnce();
-  if (await cachedTableCount('dashboard_urls') === 0 && process.env.AUTO_SYNC_DASHBOARD_CACHE === 'true') {
+  let hasCachedUrls = await cachedTableHasRows('dashboard_urls');
+  if (!hasCachedUrls && process.env.AUTO_SYNC_DASHBOARD_CACHE === 'true') {
     await refreshDashboardCache();
+    hasCachedUrls = await cachedTableHasRows('dashboard_urls');
   }
-  if (await cachedTableCount('dashboard_urls') === 0) {
+  if (!hasCachedUrls) {
     throw new Error('dashboard_urls cache is empty. Run /api/settings/maintenance/sync-cache after heavy imports.');
   }
 
@@ -2074,31 +2502,14 @@ async function handleLiteApi(pathname, parsed, request, response) {
   if (pathname === '/api/jobs') {
     sendJson(response, 200, await readWithLiteStaleCache(
       'jobs',
-      () => readAppStateArray('inspectionJobs', { limit: 200, reverse: true }),
+      () => readCachedJobs(200),
       () => []
     ));
     return true;
   }
 
   if (pathname === '/api/job-diagnostics') {
-    const payload = await readWithLiteStaleCache('job-diagnostics', async () => {
-      const jobs = await readAppStateArray('inspectionJobs');
-      return {
-        summary: {
-          total: jobs.length,
-          pending: jobs.filter((job) => job.status === 'pending').length,
-          duePending: jobs.filter((job) => job.status === 'pending' && new Date(job.dueAt) <= new Date()).length,
-          running: jobs.filter((job) => job.status === 'running').length,
-          completed: jobs.filter((job) => job.status === 'completed').length,
-          skipped: jobs.filter((job) => job.status === 'skipped').length,
-          failed: jobs.filter((job) => job.status === 'failed').length
-        },
-        byStatus: [],
-        byReason: [],
-        byError: [],
-        recentProblemJobs: []
-      };
-    }, degradedJobDiagnostics);
+    const payload = await readWithLiteStaleCache('job-diagnostics', readCachedJobDiagnostics, degradedJobDiagnostics);
     sendJson(response, 200, payload);
     return true;
   }
@@ -2171,6 +2582,12 @@ async function handleLiteApi(pathname, parsed, request, response) {
   if (pathname === '/api/actions/run-scheduler' && request.method === 'POST') {
     const result = await startSchedulerAction(await readBody(request));
     sendJson(response, result.accepted ? 202 : 503, { ok: result.accepted, ...result, lite: true });
+    return true;
+  }
+
+  if (pathname === '/api/actions/inspect-url-direct' && request.method === 'POST') {
+    const result = await inspectUrlDirect(await readBody(request));
+    sendJson(response, 200, { ok: true, ...result, lite: true });
     return true;
   }
 
@@ -3123,7 +3540,13 @@ async function serveStatic(response, requestPath) {
       '.js': 'application/javascript; charset=utf-8',
       '.json': 'application/json; charset=utf-8'
     }[ext] ?? 'application/octet-stream';
-    response.writeHead(200, { 'content-type': type });
+    const cacheControl = ['.html', '.js', '.css'].includes(ext)
+      ? 'no-store, max-age=0'
+      : 'public, max-age=300';
+    response.writeHead(200, {
+      'content-type': type,
+      'cache-control': cacheControl
+    });
     response.end(content);
   } catch (error) {
     if (error.code === 'ENOENT') sendText(response, 404, 'Not found');
@@ -3330,7 +3753,92 @@ function schedulerRunOptions(body = {}) {
   return {
     limit: Math.max(1, Math.min(Number(body.limit ?? 100) || 100, 1000)),
     force: Boolean(body.force),
-    urlId: body.urlId ? Number(body.urlId) : null
+    urlId: body.urlId ? Number(body.urlId) : null,
+    url: body.url ? String(body.url) : null,
+    propertyUrl: body.propertyUrl ? String(body.propertyUrl) : null
+  };
+}
+
+function directInspectPropertyForUrl(config, url) {
+  const normalized = normalizeUrl(url);
+  const mappings = [...(config.propertyMappings ?? [])]
+    .filter((mapping) => mapping.isActive !== false)
+    .filter((mapping) => {
+      if (!mapping.pathPrefix || mapping.pathPrefix === '/') return true;
+      try {
+        return new URL(normalized).pathname.startsWith(mapping.pathPrefix);
+      } catch {
+        return false;
+      }
+    })
+    .sort((a, b) => String(b.pathPrefix ?? '').length - String(a.pathPrefix ?? '').length);
+  return mappings[0] ?? (config.propertyMappings ?? []).find((mapping) => mapping.propertyUrl === 'https://www.jotform.com/')
+    ?? (config.propertyMappings ?? []).find((mapping) => mapping.propertyUrl)
+    ?? { propertyUrl: 'https://www.jotform.com/', propertyName: 'Default property', propertyType: 'url-prefix' };
+}
+
+async function inspectUrlDirect({ url, urlId = null, propertyUrl = null } = {}) {
+  if (!url) throw new Error('url is required');
+  const config = context?.config ?? await loadConfig();
+  const normalizedUrl = normalizeUrl(url);
+  const mapping = propertyUrl
+    ? { propertyUrl, propertyName: propertyUrl, propertyType: propertyUrl.startsWith('sc-domain:') ? 'domain' : 'url-prefix' }
+    : directInspectPropertyForUrl(config, normalizedUrl);
+  const property = {
+    id: mapping.id ?? null,
+    propertyName: mapping.propertyName ?? mapping.propertyUrl,
+    propertyUrl: mapping.propertyUrl,
+    propertyType: mapping.propertyType ?? (mapping.propertyUrl.startsWith('sc-domain:') ? 'domain' : 'url-prefix')
+  };
+  const urlRecord = {
+    id: urlId ? Number(urlId) : null,
+    normalizedUrl,
+    url: normalizedUrl,
+    category: mapping.category ?? 'manual',
+    locale: mapping.locale ?? 'en',
+    currentIndexState: 'manual_direct_inspection',
+    currentHealthState: 'unknown',
+    isScaledContent: false,
+    isManuallyExcluded: false,
+    isActive: true
+  };
+  const provider = createInspectionProvider(config.policy);
+  const result = await provider.inspect(urlRecord, property);
+  const inspection = {
+    ...result,
+    id: null,
+    urlId: urlId ? Number(urlId) : null,
+    propertyId: property.id,
+    normalizedUrl,
+    inspectionDate: dateKey(result.inspectedAt),
+    property
+  };
+  return {
+    accepted: true,
+    triggerMode: 'direct_inspection',
+    summary: {
+      createdJobs: 0,
+      inspected: result.errorCode ? 0 : 1,
+      skipped: result.errorCode ? 1 : 0,
+      alertsCreated: 0,
+      errors: result.errorCode ? [{ error: result.errorMessage ?? result.errorCode }] : []
+    },
+    detail: {
+      url: urlRecord,
+      sources: [],
+      prioritySnapshots: [],
+      inspections: [inspection],
+      transitions: [],
+      jobs: [],
+      technicalChecks: [],
+      alerts: [],
+      health: null,
+      propertyResolution: { selectedPropertyUrl: property.propertyUrl, candidates: [{ property, reason: 'direct inspection' }] },
+      direct: true
+    },
+    result: inspection,
+    property,
+    options: { url: normalizedUrl, urlId: urlId ? Number(urlId) : null, propertyUrl: property.propertyUrl }
   };
 }
 
@@ -3369,6 +3877,20 @@ async function triggerRenderOneOffSchedulerJob(options = {}) {
 async function startSchedulerAction(body = {}) {
   const options = schedulerRunOptions(body);
   const singleUrlForce = options.force && options.urlId && options.limit <= 1;
+  if (singleUrlForce && options.url && process.env.DIRECT_INSPECTION_FALLBACK !== 'false') {
+    const result = await inspectUrlDirect({
+      url: options.url,
+      urlId: options.urlId,
+      propertyUrl: options.propertyUrl
+    });
+    return {
+      ...result,
+      triggerMode: 'direct_inspection',
+      persisted: false,
+      note: 'Direct single URL inspection bypassed scheduler/app-state loading.'
+    };
+  }
+
   if (singleUrlForce && context && process.env.INLINE_FORCE_INSPECTION !== 'false') {
     try {
       const summary = await runScheduler(context.store, context.config, {
@@ -3388,6 +3910,40 @@ async function startSchedulerAction(body = {}) {
       console.error('Inline forced inspection failed:', error);
       if (!renderOneOffConfig().apiKey || !renderOneOffConfig().serviceId) throw error;
     }
+  }
+
+  if (singleUrlForce && process.env.DIRECT_INSPECTION_FALLBACK !== 'false') {
+    try {
+      const detail = context ? urlDetail(context.store, options.urlId) : await readLiteUrlDetail(options.urlId);
+      const url = detail?.url?.normalizedUrl ?? detail?.url?.url;
+      if (url) {
+        const result = await inspectUrlDirect({ url });
+        return {
+          ...result,
+          triggerMode: 'direct_inspection_fallback',
+          persisted: false,
+          note: 'App state was unavailable, so this direct Inspection API result was not saved to history.'
+        };
+      }
+    } catch (error) {
+      console.error('Direct single URL inspection fallback failed:', error);
+      return {
+        accepted: false,
+        triggerMode: 'direct_inspection_unavailable',
+        options,
+        error: 'Single URL inspection needs the URL string when app-state/database reads are unavailable.',
+        details: error.message
+      };
+    }
+  }
+
+  if (singleUrlForce) {
+    return {
+      accepted: false,
+      triggerMode: 'single_url_not_started',
+      options,
+      error: 'Single URL inspection was not started because the URL string was not provided.'
+    };
   }
 
   const preferredMode = renderOneOffConfig().apiKey && renderOneOffConfig().serviceId ? 'render_one_off' : 'local_background';
@@ -4333,6 +4889,12 @@ const server = http.createServer(async (request, response) => {
       return;
     }
 
+    if (pathname === '/api/actions/inspect-url-direct' && request.method === 'POST') {
+      const result = await inspectUrlDirect(await readBody(request));
+      sendJson(response, 200, { ok: true, ...result });
+      return;
+    }
+
     if (pathname === '/api/actions/classify-urls' && request.method === 'POST') {
       const body = await readBody(request);
       const candidates = urlsForAiClassification(context.store, body.limit ?? 20);
@@ -4371,4 +4933,9 @@ const server = http.createServer(async (request, response) => {
 
 server.listen(PORT, () => {
   console.log(`Index Health Monitoring Engine running at http://localhost:${PORT}`);
+  if (process.env.DATABASE_URL) {
+    ensureDashboardCacheTablesOnce().catch((error) => {
+      console.error('Dashboard cache table warmup failed:', error.message);
+    });
+  }
 });

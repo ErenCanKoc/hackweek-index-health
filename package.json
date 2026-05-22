@@ -10,6 +10,7 @@
     "scheduler": "node scripts/run-scheduler.mjs",
     "sitemap:fetch-job": "node scripts/run-sitemap-fetch-job.mjs",
     "csv:import-tasks": "node scripts/run-csv-import-tasks.mjs",
+    "inspect:url": "node scripts/inspect-url.mjs",
     "check:supabase": "node scripts/check-supabase.mjs",
     "smoke": "node scripts/smoke-test.mjs"
   },
