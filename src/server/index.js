@@ -399,6 +399,131 @@ async function readAppStateArrayByNumber(key, field, value, { limit = null, reve
   return result.rows.map((row) => row.elem);
 }
 
+async function readLiteUrlDetail(id) {
+  const pool = getLitePool();
+  if (!pool) return null;
+  const appStateKey = process.env.APP_STATE_KEY || 'default';
+  const result = await pool.query(
+    `
+      WITH state_row AS (
+        SELECT state
+        FROM app_state
+        WHERE id = $1
+      ),
+      url_row AS (
+        SELECT elem AS url
+        FROM state_row,
+          jsonb_array_elements(COALESCE(state -> 'urls', '[]'::jsonb)) AS rows(elem)
+        WHERE elem ? 'id'
+          AND (elem ->> 'id')::numeric = $2
+        LIMIT 1
+      ),
+      sources AS (
+        SELECT COALESCE(jsonb_agg(elem ORDER BY ord DESC), '[]'::jsonb) AS rows
+        FROM (
+          SELECT elem, ord
+          FROM state_row,
+            jsonb_array_elements(COALESCE(state -> 'urlSources', '[]'::jsonb)) WITH ORDINALITY AS rows(elem, ord)
+          WHERE elem ? 'urlId'
+            AND (elem ->> 'urlId')::numeric = $2
+          ORDER BY ord DESC
+          LIMIT 20
+        ) source_rows
+      ),
+      inspections AS (
+        SELECT COALESCE(jsonb_agg(elem ORDER BY ord DESC), '[]'::jsonb) AS rows
+        FROM (
+          SELECT elem, ord
+          FROM state_row,
+            jsonb_array_elements(COALESCE(state -> 'inspectionResults', '[]'::jsonb)) WITH ORDINALITY AS rows(elem, ord)
+          WHERE elem ? 'urlId'
+            AND (elem ->> 'urlId')::numeric = $2
+          ORDER BY ord DESC
+          LIMIT 20
+        ) inspection_rows
+      ),
+      jobs AS (
+        SELECT COALESCE(jsonb_agg(elem ORDER BY ord DESC), '[]'::jsonb) AS rows
+        FROM (
+          SELECT elem, ord
+          FROM state_row,
+            jsonb_array_elements(COALESCE(state -> 'inspectionJobs', '[]'::jsonb)) WITH ORDINALITY AS rows(elem, ord)
+          WHERE elem ? 'urlId'
+            AND (elem ->> 'urlId')::numeric = $2
+          ORDER BY ord DESC
+          LIMIT 20
+        ) job_rows
+      ),
+      technical_checks AS (
+        SELECT COALESCE(jsonb_agg(elem ORDER BY ord DESC), '[]'::jsonb) AS rows
+        FROM (
+          SELECT elem, ord
+          FROM state_row,
+            jsonb_array_elements(COALESCE(state -> 'technicalChecks', '[]'::jsonb)) WITH ORDINALITY AS rows(elem, ord)
+          WHERE elem ? 'urlId'
+            AND (elem ->> 'urlId')::numeric = $2
+          ORDER BY ord DESC
+          LIMIT 10
+        ) technical_rows
+      ),
+      alerts AS (
+        SELECT COALESCE(jsonb_agg(elem ORDER BY ord DESC), '[]'::jsonb) AS rows
+        FROM (
+          SELECT elem, ord
+          FROM state_row,
+            jsonb_array_elements(COALESCE(state -> 'alerts', '[]'::jsonb)) WITH ORDINALITY AS rows(elem, ord)
+          WHERE elem ? 'urlId'
+            AND (elem ->> 'urlId')::numeric = $2
+          ORDER BY ord DESC
+          LIMIT 20
+        ) alert_rows
+      ),
+      health AS (
+        SELECT elem AS row
+        FROM state_row,
+          jsonb_array_elements(COALESCE(state -> 'healthStatuses', '[]'::jsonb)) WITH ORDINALITY AS rows(elem, ord)
+        WHERE elem ? 'urlId'
+          AND (elem ->> 'urlId')::numeric = $2
+        ORDER BY ord DESC
+        LIMIT 1
+      ),
+      properties AS (
+        SELECT COALESCE(jsonb_agg(elem), '[]'::jsonb) AS rows
+        FROM state_row,
+          jsonb_array_elements(COALESCE(state -> 'properties', '[]'::jsonb)) AS rows(elem)
+      )
+      SELECT
+        url_row.url,
+        sources.rows AS sources,
+        inspections.rows AS inspections,
+        jobs.rows AS jobs,
+        technical_checks.rows AS technical_checks,
+        alerts.rows AS alerts,
+        health.row AS health,
+        properties.rows AS properties
+      FROM url_row, sources, inspections, jobs, technical_checks, alerts, properties
+      LEFT JOIN health ON true
+    `,
+    [appStateKey, Number(id)]
+  );
+  const row = result.rows[0] ?? null;
+  if (!row?.url) return null;
+  const propertyById = new Map((row.properties ?? []).map((property) => [Number(property.id), property]));
+  return {
+    url: row.url,
+    sources: row.sources ?? [],
+    prioritySnapshots: [],
+    inspections: (row.inspections ?? []).map((item) => ({ ...item, property: propertyById.get(Number(item.propertyId)) ?? null })),
+    transitions: [],
+    jobs: (row.jobs ?? []).map((job) => ({ ...job, property: propertyById.get(Number(job.propertyId)) ?? null })),
+    technicalChecks: row.technical_checks ?? [],
+    alerts: row.alerts ?? [],
+    health: row.health ?? null,
+    propertyResolution: { selectedPropertyUrl: 'lite mode', candidates: [] },
+    lite: true
+  };
+}
+
 async function readAppStateMeta() {
   const pool = getLitePool();
   if (!pool) return null;
@@ -1632,36 +1757,12 @@ async function handleLiteApi(pathname, parsed, request, response) {
   }
 
   if (detailMatch && request.method === 'GET') {
-    const id = Number(detailMatch[1]);
-    const [urls, sources, inspections, jobs, technicalChecks, alerts, healthStatuses, properties] = await Promise.all([
-      readAppStateArrayByNumber('urls', 'id', id, { limit: 1 }),
-      readAppStateArrayByNumber('urlSources', 'urlId', id, { limit: 20, reverse: true }),
-      readAppStateArrayByNumber('inspectionResults', 'urlId', id, { limit: 20, reverse: true }),
-      readAppStateArrayByNumber('inspectionJobs', 'urlId', id, { limit: 20, reverse: true }),
-      readAppStateArrayByNumber('technicalChecks', 'urlId', id, { limit: 10, reverse: true }),
-      readAppStateArrayByNumber('alerts', 'urlId', id, { limit: 20, reverse: true }),
-      readAppStateArrayByNumber('healthStatuses', 'urlId', id, { limit: 1 }),
-      readAppStateArray('properties')
-    ]);
-    const propertyById = new Map((properties ?? []).map((property) => [Number(property.id), property]));
-    const url = urls?.[0] ?? null;
-    if (!url) {
+    const detail = await readLiteUrlDetail(Number(detailMatch[1]));
+    if (!detail) {
       sendJson(response, 404, { error: 'URL not found' });
       return true;
     }
-    sendJson(response, 200, {
-      url,
-      sources: sources ?? [],
-      prioritySnapshots: [],
-      inspections: (inspections ?? []).map((item) => ({ ...item, property: propertyById.get(Number(item.propertyId)) ?? null })),
-      transitions: [],
-      jobs: (jobs ?? []).map((job) => ({ ...job, property: propertyById.get(Number(job.propertyId)) ?? null })),
-      technicalChecks: technicalChecks ?? [],
-      alerts: alerts ?? [],
-      health: healthStatuses?.[0] ?? null,
-      propertyResolution: { selectedPropertyUrl: 'lite mode', candidates: [] },
-      lite: true
-    });
+    sendJson(response, 200, detail);
     return true;
   }
 

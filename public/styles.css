@@ -819,6 +819,13 @@ td code {
 .detail-head-status {
   display: flex;
   align-items: flex-start;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.detail-close-button {
+  white-space: nowrap;
 }
 
 .status-grid {

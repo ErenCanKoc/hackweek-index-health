@@ -495,6 +495,16 @@ function renderUrlDetailPanel() {
   target.innerHTML = detailDrawer(state.openUrlDetail);
 }
 
+function closeDetailPanel() {
+  state.openUrlId = null;
+  state.openUrlDetail = null;
+  renderUrlDetailPanel();
+  document.querySelectorAll('[data-detail]').forEach((button) => {
+    button.textContent = 'Details';
+  });
+  setStatus('Closed URL inspection details.');
+}
+
 function detailDrawer(detail) {
   const inspections = detail.inspections ?? [];
   const latest = inspections[0] ?? null;
@@ -508,6 +518,7 @@ function detailDrawer(detail) {
             </div>
             <div class="detail-head-status">
               ${pill(detail.health?.currentSeverity ?? detail.url.currentHealthState ?? 'unknown')}
+              <button class="small-button detail-close-button" data-close-detail type="button" aria-label="Close URL details">Close</button>
             </div>
           </div>
           <div class="status-grid">
@@ -966,6 +977,12 @@ function setView(view) {
 }
 
 document.addEventListener('click', async (event) => {
+  if (event.target.closest('[data-close-detail]')) {
+    event.preventDefault();
+    closeDetailPanel();
+    return;
+  }
+
   const nav = event.target.closest('[data-view]');
   if (nav) {
     event.preventDefault();
@@ -1208,6 +1225,11 @@ document.querySelector('#import-gsc-properties').addEventListener('click', async
   });
   setStatus(`Imported ${result.imported.length}, skipped ${result.skipped.length}.`);
   await refresh();
+});
+
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape' || !state.openUrlDetail) return;
+  closeDetailPanel();
 });
 
 document.querySelector('#save-inspection-provider').addEventListener('click', async () => {
