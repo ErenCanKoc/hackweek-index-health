@@ -108,6 +108,35 @@ function inspectionPayload(item) {
   return item?.rawJson ?? item?.rawResponse ?? item?.inspectionResult ?? item ?? null;
 }
 
+function isDatabaseBusyMessage(message) {
+  return String(message ?? '').includes('Database is busy')
+    || String(message ?? '').includes('timeout exceeded')
+    || String(message ?? '').includes('max clients reached');
+}
+
+function degradedDetailForId(id, message) {
+  return {
+    url: {
+      id: Number(id),
+      normalizedUrl: `URL #${id}`,
+      url: `URL #${id}`,
+      category: 'unknown',
+      locale: 'default',
+      currentIndexState: 'temporarily_unavailable',
+      currentHealthState: 'unknown'
+    },
+    inspections: [],
+    jobs: [],
+    sources: [],
+    technicalChecks: [],
+    alerts: [],
+    health: null,
+    propertyResolution: { selectedPropertyUrl: 'temporarily unavailable', candidates: [] },
+    degraded: true,
+    warning: message || 'Database is busy; retry shortly.'
+  };
+}
+
 function fmtDate(value) {
   if (!value) return '-';
   return new Date(value).toLocaleString();
@@ -450,7 +479,15 @@ async function loadUrls() {
     hasMore: false
   };
   if (state.openUrlId && !state.openUrlDetail) {
-    state.openUrlDetail = await api(`/api/urls/${state.openUrlId}`);
+    try {
+      state.openUrlDetail = await api(`/api/urls/${state.openUrlId}`);
+    } catch (error) {
+      if (isDatabaseBusyMessage(error.message)) {
+        state.openUrlDetail = degradedDetailForId(state.openUrlId, error.message);
+      } else {
+        throw error;
+      }
+    }
   }
   document.querySelector('#url-pagination').innerHTML = renderPagination(meta);
   document.querySelector('#url-table').innerHTML = table(
@@ -627,6 +664,14 @@ async function openDetail(id) {
       setStatus(`Loaded URL inspection details at ${new Date().toLocaleTimeString()}`);
     }
   } catch (error) {
+    if (isDatabaseBusyMessage(error.message)) {
+      state.openUrlId = Number(id);
+      state.openUrlDetail = degradedDetailForId(id, error.message);
+      renderUrlDetailPanel();
+      document.querySelector('#url-detail')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      setStatus('URL inspection details are temporarily unavailable; showing a safe fallback.');
+      return;
+    }
     state.openUrlDetail = null;
     renderUrlDetailPanel();
     setStatus(`Could not load URL inspection details: ${error.message}`);
