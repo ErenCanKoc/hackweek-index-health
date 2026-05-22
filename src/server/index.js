@@ -347,9 +347,40 @@ function rememberLiteRead(key, payload) {
   return payload;
 }
 
+function liteReadTimeoutMs() {
+  const value = Number(process.env.LITE_READ_TIMEOUT_MS ?? 2500);
+  if (!Number.isFinite(value) || value <= 0) return 2500;
+  return Math.max(500, value);
+}
+
+function liteReadTimeoutError(key, timeoutMs) {
+  const error = new Error(`Lite API read for ${key} exceeded ${timeoutMs}ms`);
+  error.code = 'EDATABASEBUSY';
+  return error;
+}
+
+async function runLiteReadWithTimeout(key, producer) {
+  const timeoutMs = liteReadTimeoutMs();
+  let timeout = null;
+  const pending = Promise.resolve().then(producer);
+  try {
+    return await Promise.race([
+      pending,
+      new Promise((_, reject) => {
+        timeout = setTimeout(() => reject(liteReadTimeoutError(key, timeoutMs)), timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+    pending.catch((error) => {
+      console.warn(`Late lite read for ${key} failed after timeout:`, error.message);
+    });
+  }
+}
+
 async function readWithLiteStaleCache(key, producer, fallbackProducer = null) {
   try {
-    return rememberLiteRead(key, await producer());
+    return rememberLiteRead(key, await runLiteReadWithTimeout(key, producer));
   } catch (error) {
     const cached = liteReadCache.get(key);
     if (isDatabaseBusyError(error) && cached) {
@@ -800,6 +831,82 @@ function degradedUrlPage(filters, error) {
     degraded: true,
     retryable: true,
     warning: 'Database is busy; no previous URL snapshot is available in this web process yet.',
+    details: error.message
+  };
+}
+
+function degradedOverview(error) {
+  return {
+    inspectedToday: 0,
+    quotaUsedToday: 0,
+    monthlyCoveragePercent: 0,
+    indexRate: 0,
+    indexLossCount: 0,
+    scaledContentIndexRate: 0,
+    p0IndexRate: 0,
+    averageTimeToIndex: 0,
+    openCriticalAlerts: 0,
+    overdueUrlCount: 0,
+    categoryHealth: [],
+    lite: true,
+    cached: true,
+    degraded: true,
+    retryable: true,
+    warning: 'Database is busy; no previous overview snapshot is available in this web process yet.',
+    details: error.message
+  };
+}
+
+function degradedScaledDashboard(error) {
+  return {
+    tabs: {
+      adcraft: [],
+      delayedIndexing: [],
+      indexLost: [],
+      stableIndexed: [],
+      recovered: []
+    },
+    kpis: {
+      newScaledUrlsToday: 0,
+      firstInspectedWithin24hPercent: 0,
+      indexedWithin1DayPercent: 0,
+      indexedWithin3DaysPercent: 0,
+      averageDaysToIndex: 0,
+      medianDaysToIndex: 0,
+      p90DaysToIndex: 0,
+      delayedIndexCount: 0,
+      delayed3DaysCount: 0,
+      delayed7DaysCount: 0,
+      indexLossCount: 0,
+      stableIndexedCount: 0
+    },
+    lite: true,
+    cached: true,
+    degraded: true,
+    retryable: true,
+    warning: 'Database is busy; no previous scaled dashboard snapshot is available in this web process yet.',
+    details: error.message
+  };
+}
+
+async function degradedSettings(origin, error) {
+  const config = await loadConfig();
+  return {
+    sources: config.sources,
+    inspection: config.policy.inspection,
+    propertyMappings: config.propertyMappings,
+    cron: cronState,
+    sitemapFetch: { error: 'Database is busy; retry shortly.' },
+    sitemapFetchJobs: { error: 'Database is busy; retry shortly.' },
+    csvImportJobs: { error: 'Database is busy; retry shortly.' },
+    importBatches: [],
+    openAI: openAiStatus(),
+    googleAuth: { error: 'Database is busy; retry shortly.' },
+    oauthRedirectUri: `${publicOrigin(origin)}/auth/google/callback`,
+    lite: true,
+    degraded: true,
+    retryable: true,
+    warning: 'Database is busy; serving file-backed settings while job state is unavailable.',
     details: error.message
   };
 }
@@ -1808,7 +1915,7 @@ async function handleLiteApi(pathname, parsed, request, response) {
   }
 
   if (pathname === '/api/overview') {
-    sendJson(response, 200, await readWithLiteStaleCache('overview', () => readCachedOverview()));
+    sendJson(response, 200, await readWithLiteStaleCache('overview', () => readCachedOverview(), degradedOverview));
     return true;
   }
 
@@ -1938,7 +2045,7 @@ async function handleLiteApi(pathname, parsed, request, response) {
         oauthRedirectUri: `${publicOrigin(parsed.origin)}/auth/google/callback`,
         lite: true
       };
-    }));
+    }, (error) => degradedSettings(parsed.origin, error)));
     return true;
   }
 
@@ -2179,7 +2286,7 @@ async function handleLiteApi(pathname, parsed, request, response) {
 
   if (pathname === '/api/scaled') {
     try {
-      sendJson(response, 200, await readWithLiteStaleCache('scaled', () => readCachedScaledDashboard()));
+      sendJson(response, 200, await readWithLiteStaleCache('scaled', () => readCachedScaledDashboard(), degradedScaledDashboard));
     } catch (error) {
       console.error('Cached scaled dashboard failed:', error.message);
       if (process.env.ENABLE_APP_STATE_URL_FALLBACK !== 'true') {

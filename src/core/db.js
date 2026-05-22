@@ -31,15 +31,29 @@ function poolMax() {
   return numericEnv('DATABASE_LITE_POOL_MAX', 'DATABASE_WEB_POOL_MAX') ?? 4;
 }
 
+function connectionTimeoutMillis() {
+  const configured = numericEnv('DATABASE_CONNECTION_TIMEOUT_MS');
+  if (configured) return configured;
+  return isWorkerProcess() ? 10000 : 2500;
+}
+
+function queryTimeoutMillis() {
+  const configured = numericEnv('DATABASE_QUERY_TIMEOUT_MS');
+  if (configured) return configured;
+  return isWorkerProcess() ? null : 8000;
+}
+
 export function getDatabasePool() {
   if (!process.env.DATABASE_URL) return null;
   if (!databasePool) {
+    const queryTimeout = queryTimeoutMillis();
     databasePool = new pg.Pool({
       connectionString: process.env.DATABASE_URL,
       ssl: process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: false },
       max: poolMax(),
-      connectionTimeoutMillis: Number(process.env.DATABASE_CONNECTION_TIMEOUT_MS ?? 10000),
-      idleTimeoutMillis: Number(process.env.DATABASE_IDLE_TIMEOUT_MS ?? 10000)
+      connectionTimeoutMillis: connectionTimeoutMillis(),
+      idleTimeoutMillis: Number(process.env.DATABASE_IDLE_TIMEOUT_MS ?? 10000),
+      ...(queryTimeout ? { query_timeout: queryTimeout } : {})
     });
   }
   return databasePool;
