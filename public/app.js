@@ -122,6 +122,14 @@ function readCachedApi(key) {
   }
 }
 
+function forgetApi(path, method = 'GET') {
+  const key = apiCacheKey(path, method);
+  if (!key) return;
+  try {
+    sessionStorage.removeItem(key);
+  } catch {}
+}
+
 function setStatus(message) {
   document.querySelector('#status-line').textContent = message;
 }
@@ -255,6 +263,7 @@ function schedulerStatus(summary) {
 
 function schedulerStartStatus(result) {
   if (result.summary) return schedulerStatus(result.summary);
+  if (result.triggerMode === 'inline_force') return 'Inspection finished for the selected URL.';
   const mode = result.triggerMode === 'render_one_off' ? 'Render one-off job' : 'background job';
   const jobId = result.renderJob?.id ? ` ${result.renderJob.id}` : '';
   return `Scheduler started as ${mode}${jobId}. You can keep using the dashboard.`;
@@ -1137,9 +1146,18 @@ document.addEventListener('click', async (event) => {
     setStatus('Inspecting selected URL...');
     const result = await api('/api/actions/run-scheduler', {
       method: 'POST',
+      timeoutMs: 45000,
       body: JSON.stringify({ limit: 1, force: true, urlId: id })
     });
-    await openDetail(id);
+    forgetApi(`/api/urls/${id}`);
+    if (result.detail) {
+      state.openUrlId = id;
+      state.openUrlDetail = result.detail;
+      await loadUrls();
+      document.querySelector('#url-detail')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } else {
+      await openDetail(id);
+    }
     setStatus(schedulerStartStatus(result));
     return;
   }

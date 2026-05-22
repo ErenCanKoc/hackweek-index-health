@@ -123,6 +123,30 @@ function parseInspectionResponse(urlRecord, rawJson) {
   };
 }
 
+function inspectionApiErrorResult(rawJson, status, message) {
+  return {
+    inspectedAt: nowIso(),
+    rawJson,
+    verdict: null,
+    coverageState: 'inspection_api_error',
+    indexingState: null,
+    robotsTxtState: null,
+    pageFetchState: null,
+    lastCrawlTime: null,
+    googleCanonical: null,
+    userCanonical: null,
+    referringUrls: [],
+    sitemapUrls: [],
+    isSubmittedAndIndexed: false,
+    isIndexed: false,
+    isNotIndexed: true,
+    isCanonicalMismatch: false,
+    isRedirected: false,
+    errorCode: status,
+    errorMessage: message
+  };
+}
+
 export class GoogleUrlInspectionProvider {
   constructor(policy) {
     this.policy = policy;
@@ -179,42 +203,44 @@ export class GoogleUrlInspectionProvider {
 
   async inspect(urlRecord, property) {
     const token = await this.getAccessToken();
-    const response = await fetch('https://searchconsole.googleapis.com/v1/urlInspection/index:inspect', {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${token}`,
-        'content-type': 'application/json'
-      },
-      body: JSON.stringify({
-        inspectionUrl: urlRecord.normalizedUrl,
-        siteUrl: property.propertyUrl,
-        languageCode: process.env.GSC_LANGUAGE_CODE ?? this.policy.inspection.languageCode ?? 'en-US'
-      })
-    });
+    const timeoutMs = Math.max(5000, Number(process.env.GSC_INSPECTION_TIMEOUT_MS ?? 30000) || 30000);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    let response;
+    try {
+      response = await fetch('https://searchconsole.googleapis.com/v1/urlInspection/index:inspect', {
+        method: 'POST',
+        signal: controller.signal,
+        headers: {
+          authorization: `Bearer ${token}`,
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({
+          inspectionUrl: urlRecord.normalizedUrl,
+          siteUrl: property.propertyUrl,
+          languageCode: process.env.GSC_LANGUAGE_CODE ?? this.policy.inspection.languageCode ?? 'en-US'
+        })
+      });
+    } catch (error) {
+      if (error.name === 'AbortError') {
+        return inspectionApiErrorResult(
+          { error: { status: 'TIMEOUT', message: `Inspection API timed out after ${Math.round(timeoutMs / 1000)}s` } },
+          'TIMEOUT',
+          `Inspection API timed out after ${Math.round(timeoutMs / 1000)}s`
+        );
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
 
     const json = await response.json();
     if (!response.ok) {
-      return {
-        inspectedAt: nowIso(),
-        rawJson: json,
-        verdict: null,
-        coverageState: 'inspection_api_error',
-        indexingState: null,
-        robotsTxtState: null,
-        pageFetchState: null,
-        lastCrawlTime: null,
-        googleCanonical: null,
-        userCanonical: null,
-        referringUrls: [],
-        sitemapUrls: [],
-        isSubmittedAndIndexed: false,
-        isIndexed: false,
-        isNotIndexed: true,
-        isCanonicalMismatch: false,
-        isRedirected: false,
-        errorCode: json.error?.status ?? String(response.status),
-        errorMessage: json.error?.message ?? `Inspection API failed with ${response.status}`
-      };
+      return inspectionApiErrorResult(
+        json,
+        json.error?.status ?? String(response.status),
+        json.error?.message ?? `Inspection API failed with ${response.status}`
+      );
     }
 
     return parseInspectionResponse(urlRecord, json);

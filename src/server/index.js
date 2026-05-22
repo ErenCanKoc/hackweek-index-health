@@ -3368,6 +3368,28 @@ async function triggerRenderOneOffSchedulerJob(options = {}) {
 
 async function startSchedulerAction(body = {}) {
   const options = schedulerRunOptions(body);
+  const singleUrlForce = options.force && options.urlId && options.limit <= 1;
+  if (singleUrlForce && context && process.env.INLINE_FORCE_INSPECTION !== 'false') {
+    try {
+      const summary = await runScheduler(context.store, context.config, {
+        ...options,
+        limit: 1,
+        force: true,
+        skipTechnicalDiagnosis: true
+      });
+      await context.store.save();
+      refreshDashboardCache().catch((error) => console.error('Dashboard cache refresh failed after forced inspection:', error.message));
+      const detail = urlDetail(context.store, options.urlId);
+      cronState.lastResult = { reason: 'manual_force_inspection', summary, completedAt: nowIso() };
+      cronState.lastError = null;
+      return { accepted: true, triggerMode: 'inline_force', summary, detail, options: { ...options, limit: 1, force: true } };
+    } catch (error) {
+      cronState.lastError = error.message;
+      console.error('Inline forced inspection failed:', error);
+      if (!renderOneOffConfig().apiKey || !renderOneOffConfig().serviceId) throw error;
+    }
+  }
+
   const preferredMode = renderOneOffConfig().apiKey && renderOneOffConfig().serviceId ? 'render_one_off' : 'local_background';
   if (preferredMode === 'render_one_off') {
     try {

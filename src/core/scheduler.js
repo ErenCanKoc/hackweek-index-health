@@ -247,7 +247,7 @@ export async function runScheduler(store, config, options = {}) {
       const alerts = maybeCreateResultAlerts(store, urlRecord, result, previousState, property.id, config.policy);
       summary.alertsCreated += alerts.length;
 
-      if (shouldRunTechnicalDiagnosis(urlRecord, result, config.policy)) {
+      if (!options.skipTechnicalDiagnosis && shouldRunTechnicalDiagnosis(urlRecord, result, config.policy)) {
         const check = await runTechnicalDiagnosis(urlRecord, config.policy);
         store.insert('technicalChecks', check);
         summary.technicalChecks += 1;
