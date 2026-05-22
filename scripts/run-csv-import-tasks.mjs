@@ -10,16 +10,25 @@ async function resolveJobId() {
   if (Number.isInteger(supplied) && supplied > 0) return supplied;
 
   const jobs = await listCsvImportJobs(10);
-  const activeJob = jobs.find((job) => ['queued', 'running', 'failed'].includes(job.status));
+  const activeJob = jobs.find((job) => {
+    if (!['queued', 'running'].includes(job.status)) return false;
+    const totalTasks = Number(job.options?.totalTasks ?? job.progress?.totalTasks ?? 0);
+    const completedTasks = Number(job.progress?.completedTasks ?? 0);
+    return totalTasks > 0 && completedTasks < totalTasks;
+  });
   if (activeJob) return Number(activeJob.id);
 
-  console.error('Usage: node scripts/run-csv-import-tasks.mjs <jobId>');
-  console.error('No queued, running, or failed CSV import job was found.');
-  process.exit(1);
+  console.log(JSON.stringify({
+    ok: true,
+    skipped: true,
+    reason: 'No queued or running CSV import job was found.'
+  }, null, 2));
+  process.exit(0);
 }
 
+let jobId = null;
 try {
-  const jobId = await resolveJobId();
+  jobId = await resolveJobId();
   const result = await processCsvImportJobTasks(jobId, {
     maxTasks: process.env.CSV_IMPORT_WORKER_MAX_TASKS,
     maxRuntimeMs: process.env.CSV_IMPORT_WORKER_MAX_RUNTIME_MS,
@@ -27,6 +36,6 @@ try {
   });
   console.log(JSON.stringify({ ok: true, jobId, result }, null, 2));
 } catch (error) {
-  console.error(`CSV import task worker ${jobId} failed:`, error);
+  console.error(`CSV import task worker ${jobId ?? 'unknown'} failed:`, error);
   process.exit(1);
 }
