@@ -1,9 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import pg from 'pg';
+import { getDatabasePool } from './db.js';
 import { nowIso } from './utils.js';
-
-let sharedPgPool = null;
 
 const DEFAULT_STATE = {
   meta: { createdAt: null, updatedAt: null },
@@ -42,16 +40,7 @@ export class Store {
   }
 
   getPool() {
-    if (!sharedPgPool) {
-      sharedPgPool = new pg.Pool({
-        connectionString: this.databaseUrl,
-        ssl: process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: false },
-        max: Number(process.env.DATABASE_STORE_POOL_MAX ?? 1),
-        connectionTimeoutMillis: Number(process.env.DATABASE_CONNECTION_TIMEOUT_MS ?? 10000),
-        idleTimeoutMillis: 10000
-      });
-    }
-    return sharedPgPool;
+    return getDatabasePool();
   }
 
   async ensureAppStateTable() {

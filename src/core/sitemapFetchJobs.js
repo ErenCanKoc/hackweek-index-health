@@ -1,4 +1,4 @@
-import pg from 'pg';
+import { getDatabasePool } from './db.js';
 import { loadConfig, withStoredSources } from './config.js';
 import { ingestConfiguredSitemaps } from './ingestion.js';
 import { recalculatePriorities } from './priority.js';
@@ -8,20 +8,8 @@ import { isSitemapLikeUrl } from './sitemap.js';
 import { nowIso } from './utils.js';
 import { withStateMutationLock } from './jobLocks.js';
 
-let jobPool = null;
-
 function getJobPool() {
-  if (!process.env.DATABASE_URL) return null;
-  if (!jobPool) {
-    jobPool = new pg.Pool({
-      connectionString: process.env.DATABASE_URL,
-      ssl: process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: false },
-      max: Number(process.env.DATABASE_SITEMAP_JOB_POOL_MAX ?? 1),
-      connectionTimeoutMillis: 5000,
-      idleTimeoutMillis: 10000
-    });
-  }
-  return jobPool;
+  return getDatabasePool();
 }
 
 function appStateKey() {

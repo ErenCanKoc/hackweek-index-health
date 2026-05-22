@@ -801,7 +801,17 @@ async function loadSettings() {
       </tr>
     `)
   );
-  const csvImportJobs = settings.csvImportJobs ?? [];
+  const csvImportJobs = Array.isArray(settings.csvImportJobs) ? settings.csvImportJobs : [];
+  const csvImportJobsError = settings.csvImportJobs && !Array.isArray(settings.csvImportJobs)
+    ? settings.csvImportJobs.error
+    : null;
+  const sitemapFetchJobs = Array.isArray(settings.sitemapFetchJobs) ? settings.sitemapFetchJobs : [];
+  const sitemapFetchJobsError = settings.sitemapFetchJobs && !Array.isArray(settings.sitemapFetchJobs)
+    ? settings.sitemapFetchJobs.error
+    : null;
+  if (csvImportJobsError) {
+    document.querySelector('#import-history').innerHTML += `<div class="empty-state">CSV job history unavailable: ${esc(csvImportJobsError)}</div>`;
+  }
   if (csvImportJobs.length) {
     document.querySelector('#import-history').innerHTML += table(
       ['Job', 'Type', 'Status', 'Progress', 'Started', 'Finished'],
@@ -829,7 +839,7 @@ async function loadSettings() {
   `;
   document.querySelector('#sitemap-fetch-jobs').innerHTML = table(
     ['Job', 'Status', 'Progress', 'Started', 'Finished'],
-    (settings.sitemapFetchJobs ?? []).map((job) => `
+    sitemapFetchJobs.map((job) => `
       <tr>
         <td>#${job.id}</td>
         <td>${renderSitemapJobStatus(job)}</td>
@@ -838,7 +848,7 @@ async function loadSettings() {
         <td>${fmtDate(job.finishedAt)}</td>
       </tr>
     `)
-  );
+  ) + (sitemapFetchJobsError ? `<div class="empty-state">Sitemap job history unavailable: ${esc(sitemapFetchJobsError)}</div>` : '');
   document.querySelector('#source-management').innerHTML = table(
     ['<label class="select-all-control"><input id="select-all-sources" type="checkbox"> All</label>', 'Type', 'Source URL'],
     sourceRows(settings).map((source) => `

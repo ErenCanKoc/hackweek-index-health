@@ -1,4 +1,4 @@
-import pg from 'pg';
+import { getDatabasePool } from './db.js';
 import {
   ingestBusinessRows,
   ingestBusinessWideCsvText,
@@ -11,20 +11,8 @@ import { nowIso, parseCsv } from './utils.js';
 import { refreshDashboardCache } from './dashboardCache.js';
 import { withStateMutationLock } from './jobLocks.js';
 
-let jobPool = null;
-
 function getJobPool() {
-  if (!process.env.DATABASE_URL) return null;
-  if (!jobPool) {
-    jobPool = new pg.Pool({
-      connectionString: process.env.DATABASE_URL,
-      ssl: process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: false },
-      max: Number(process.env.DATABASE_CSV_JOB_POOL_MAX ?? 1),
-      connectionTimeoutMillis: 5000,
-      idleTimeoutMillis: 10000
-    });
-  }
-  return jobPool;
+  return getDatabasePool();
 }
 
 function appStateKey() {

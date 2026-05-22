@@ -2,10 +2,10 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import pg from 'pg';
 import { fileURLToPath } from 'node:url';
 import { createContext, seedContext } from '../core/bootstrap.js';
 import { loadConfig, readJson, withStoredSources, writeJson } from '../core/config.js';
+import { getDatabasePool, isConnectionCapacityError } from '../core/db.js';
 import {
   ingestBusinessWideCsvText,
   ingestConfiguredSitemaps,
@@ -63,7 +63,6 @@ const PORT = Number(process.env.PORT ?? 3000);
 const serverDir = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.resolve(serverDir, '../../public');
 const SESSION_COOKIE = 'ih_session';
-let litePool = null;
 
 function publicOrigin(fallbackOrigin) {
   return (process.env.APP_BASE_URL || fallbackOrigin).replace(/\/+$/, '');
@@ -299,17 +298,7 @@ function sendText(response, statusCode, payload, contentType = 'text/plain; char
 }
 
 function getLitePool() {
-  if (!process.env.DATABASE_URL) return null;
-  if (!litePool) {
-    litePool = new pg.Pool({
-      connectionString: process.env.DATABASE_URL,
-      ssl: process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: false },
-      max: Number(process.env.DATABASE_LITE_POOL_MAX ?? 2),
-      connectionTimeoutMillis: Number(process.env.DATABASE_CONNECTION_TIMEOUT_MS ?? 10000),
-      idleTimeoutMillis: 10000
-    });
-  }
-  return litePool;
+  return getDatabasePool();
 }
 
 function appStateKey() {
@@ -1376,6 +1365,18 @@ function liteOverviewFromArrays({ urls, inspectionResults, properties, alerts })
   };
 }
 
+async function safeSettingsValue(label, loader, fallback = {}) {
+  try {
+    return await loader();
+  } catch (error) {
+    const message = isConnectionCapacityError(error)
+      ? 'Database is busy; retry shortly.'
+      : error.message;
+    console.error(`Settings section ${label} unavailable:`, error.message);
+    return { ...fallback, error: message };
+  }
+}
+
 async function handleLiteApi(pathname, parsed, request, response) {
   if (!process.env.DATABASE_URL) return false;
 
@@ -1516,17 +1517,21 @@ async function handleLiteApi(pathname, parsed, request, response) {
 
   if (pathname === '/api/settings') {
     const config = await loadEffectiveConfigForSettings();
+    const sitemapFetch = await safeSettingsValue('sitemapFetch', () => latestSitemapFetchState(), { error: 'unavailable' });
+    const sitemapFetchJobs = await safeSettingsValue('sitemapFetchJobs', () => listSitemapFetchJobs(5));
+    const csvImportJobs = await safeSettingsValue('csvImportJobs', () => listCsvImportJobs(5));
+    const googleAuth = await safeSettingsValue('googleAuth', () => googleAuthStatus(), { error: 'unavailable' });
     sendJson(response, 200, {
       sources: config.sources,
       inspection: config.policy.inspection,
       propertyMappings: config.propertyMappings,
       cron: cronState,
-      sitemapFetch: await latestSitemapFetchState(),
-      sitemapFetchJobs: await listSitemapFetchJobs(5),
-      csvImportJobs: await listCsvImportJobs(5),
+      sitemapFetch,
+      sitemapFetchJobs,
+      csvImportJobs,
       importBatches: [],
       openAI: openAiStatus(),
-      googleAuth: await googleAuthStatus(),
+      googleAuth,
       oauthRedirectUri: `${publicOrigin(parsed.origin)}/auth/google/callback`,
       lite: true
     });
@@ -2229,11 +2234,7 @@ function rollbackImportBatch(store, batchId) {
 
 async function compactPostgresState({ aggressive = false } = {}) {
   if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL is required for recovery compaction.');
-  const pool = new pg.Pool({
-    connectionString: process.env.DATABASE_URL,
-    ssl: process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: false },
-    max: 1
-  });
+  const pool = getDatabasePool();
   const appStateKey = process.env.APP_STATE_KEY || 'default';
   const heavyKeys = [
     'prioritySnapshots',
@@ -2247,56 +2248,48 @@ async function compactPostgresState({ aggressive = false } = {}) {
   if (aggressive) {
     heavyKeys.push('inspectionResults', 'alerts');
   }
-  try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS app_state (
-        id TEXT PRIMARY KEY,
-        state JSONB NOT NULL,
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-      )
-    `);
-    const beforeResult = await pool.query(
-      `
-        SELECT ${heavyKeys.map((key) => `COALESCE(jsonb_array_length(state->'${key}'), 0) AS "${key}"`).join(', ')}
-        FROM app_state
-        WHERE id = $1
-      `,
-      [appStateKey]
-    );
-    let expression = 'state';
-    for (const key of heavyKeys) {
-      expression = `jsonb_set(${expression}, '{${key}}', '[]'::jsonb, true)`;
-    }
-    const afterResult = await pool.query(
-      `
-        UPDATE app_state
-        SET state = ${expression},
-            updated_at = now()
-        WHERE id = $1
-        RETURNING ${heavyKeys.map((key) => `COALESCE(jsonb_array_length(state->'${key}'), 0) AS "${key}"`).join(', ')}
-      `,
-      [appStateKey]
-    );
-    return {
-      appStateKey,
-      aggressive,
-      clearedKeys: heavyKeys,
-      before: beforeResult.rows[0] ?? {},
-      after: afterResult.rows[0] ?? {}
-    };
-  } finally {
-    await pool.end();
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS app_state (
+      id TEXT PRIMARY KEY,
+      state JSONB NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `);
+  const beforeResult = await pool.query(
+    `
+      SELECT ${heavyKeys.map((key) => `COALESCE(jsonb_array_length(state->'${key}'), 0) AS "${key}"`).join(', ')}
+      FROM app_state
+      WHERE id = $1
+    `,
+    [appStateKey]
+  );
+  let expression = 'state';
+  for (const key of heavyKeys) {
+    expression = `jsonb_set(${expression}, '{${key}}', '[]'::jsonb, true)`;
   }
+  const afterResult = await pool.query(
+    `
+      UPDATE app_state
+      SET state = ${expression},
+          updated_at = now()
+      WHERE id = $1
+      RETURNING ${heavyKeys.map((key) => `COALESCE(jsonb_array_length(state->'${key}'), 0) AS "${key}"`).join(', ')}
+    `,
+    [appStateKey]
+  );
+  return {
+    appStateKey,
+    aggressive,
+    clearedKeys: heavyKeys,
+    before: beforeResult.rows[0] ?? {},
+    after: afterResult.rows[0] ?? {}
+  };
 }
 
 async function compactPostgresStateIfNeeded() {
   if (!process.env.DATABASE_URL || process.env.AUTO_COMPACT_ON_CONTEXT_LOAD === 'false') return null;
   const thresholdBytes = Number(process.env.STATE_AUTO_COMPACT_BYTES ?? 8_000_000);
-  const pool = new pg.Pool({
-    connectionString: process.env.DATABASE_URL,
-    ssl: process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: false },
-    max: 1
-  });
+  const pool = getDatabasePool();
   const appStateKey = process.env.APP_STATE_KEY || 'default';
   try {
     const result = await pool.query(
@@ -2312,8 +2305,6 @@ async function compactPostgresStateIfNeeded() {
   } catch (error) {
     console.error('State auto-compaction skipped:', error.message);
     return { compacted: false, error: error.message };
-  } finally {
-    await pool.end();
   }
 }
 
@@ -2990,21 +2981,25 @@ const server = http.createServer(async (request, response) => {
 
     if (pathname === '/api/settings') {
       const effectiveConfig = withStoredSources(context.config, context.store);
+      const sitemapFetch = await safeSettingsValue('sitemapFetch', () => latestSitemapFetchState(), { error: 'unavailable' });
+      const sitemapFetchJobs = await safeSettingsValue('sitemapFetchJobs', () => listSitemapFetchJobs(5));
+      const csvImportJobs = await safeSettingsValue('csvImportJobs', () => listCsvImportJobs(5));
+      const googleAuth = await safeSettingsValue('googleAuth', () => googleAuthStatus(), { error: 'unavailable' });
       sendJson(response, 200, {
         sources: effectiveConfig.sources,
         inspection: effectiveConfig.policy.inspection,
         propertyMappings: effectiveConfig.propertyMappings,
         cron: cronState,
-        sitemapFetch: await latestSitemapFetchState(),
-        sitemapFetchJobs: await listSitemapFetchJobs(5),
-        csvImportJobs: await listCsvImportJobs(5),
+        sitemapFetch,
+        sitemapFetchJobs,
+        csvImportJobs,
         importBatches: (context.store.state.importBatches ?? [])
           .slice()
           .reverse()
           .slice(0, 20)
           .map(summarizeImportBatch),
         openAI: openAiStatus(),
-        googleAuth: await googleAuthStatus(),
+        googleAuth,
         oauthRedirectUri: `${publicOrigin(parsed.origin)}/auth/google/callback`
       });
       return;

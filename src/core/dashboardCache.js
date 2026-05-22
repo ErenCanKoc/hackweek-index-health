@@ -1,19 +1,7 @@
-import pg from 'pg';
-
-let cachePool = null;
+import { getDatabasePool } from './db.js';
 
 function getPool() {
-  if (!process.env.DATABASE_URL) return null;
-  if (!cachePool) {
-    cachePool = new pg.Pool({
-      connectionString: process.env.DATABASE_URL,
-      ssl: process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: false },
-      max: Number(process.env.DATABASE_CACHE_POOL_MAX ?? 1),
-      connectionTimeoutMillis: Number(process.env.DATABASE_CONNECTION_TIMEOUT_MS ?? 10000),
-      idleTimeoutMillis: 10000
-    });
-  }
-  return cachePool;
+  return getDatabasePool();
 }
 
 function appStateKey() {

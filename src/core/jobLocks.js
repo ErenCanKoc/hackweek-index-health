@@ -1,19 +1,7 @@
-import pg from 'pg';
-
-let lockPool = null;
+import { getDatabasePool, isConnectionCapacityError } from './db.js';
 
 function getPool() {
-  if (!process.env.DATABASE_URL) return null;
-  if (!lockPool) {
-    lockPool = new pg.Pool({
-      connectionString: process.env.DATABASE_URL,
-      ssl: process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: false },
-      max: Number(process.env.DATABASE_LOCK_POOL_MAX ?? 1),
-      connectionTimeoutMillis: Number(process.env.DATABASE_CONNECTION_TIMEOUT_MS ?? 10000),
-      idleTimeoutMillis: 10000
-    });
-  }
-  return lockPool;
+  return getDatabasePool();
 }
 
 function appStateKey() {
@@ -28,7 +16,18 @@ export async function withStateMutationLock(taskName, task, options = {}) {
   const pool = getPool();
   if (!pool) return task();
 
-  const client = await pool.connect();
+  let client;
+  try {
+    client = await pool.connect();
+  } catch (error) {
+    if (isConnectionCapacityError(error)) {
+      const busyError = new Error('Database is busy; retry this operation shortly.');
+      busyError.code = 'EDATABASEBUSY';
+      busyError.cause = error;
+      throw busyError;
+    }
+    throw error;
+  }
   const lockScope = `${appStateKey()}:state_mutation`;
   const waitIntervalMs = Math.max(1000, Number(options.waitIntervalMs ?? 15000));
   const maxWaitMs = Number.isFinite(Number(options.maxWaitMs)) && Number(options.maxWaitMs) > 0
