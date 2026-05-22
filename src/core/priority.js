@@ -36,7 +36,8 @@ function savePrioritySnapshotIfChanged(store, url, snapshot, latestSnapshots) {
     || Boolean(previous.p30Flag) !== Boolean(snapshot.p30Flag)
     || Boolean(previous.scaledFlag) !== Boolean(snapshot.scaledFlag)
     || Boolean(previous.manualFlag) !== Boolean(snapshot.manualFlag)
-    || Boolean(previous.combinedBusinessFlag) !== Boolean(snapshot.combinedBusinessFlag);
+    || Boolean(previous.combinedBusinessFlag) !== Boolean(snapshot.combinedBusinessFlag)
+    || Boolean(previous.strongBusinessFlag) !== Boolean(snapshot.strongBusinessFlag);
   if (changed) {
     const saved = store.insert('prioritySnapshots', snapshot);
     latestSnapshots.set(urlId, saved);
@@ -52,10 +53,17 @@ export function calculateThresholds(store) {
     .filter((row) => row.metricType === 'signup_count')
     .map((row) => Number(row.metricValue || 0));
 
+  const minimumClickCount = Math.max(50, Math.round(Math.max(trimmedMean(clicks), pickPercentile(clicks, 70))));
+  const minimumP30Count = Math.max(20, Math.round(Math.max(trimmedMean(p30), pickPercentile(p30, 70))));
+  const minimumSignupCount = Math.max(5, Math.round(Math.max(trimmedMean(signups), pickPercentile(signups, 70))));
+
   return {
-    minimumClickCount: Math.max(50, Math.round(Math.max(trimmedMean(clicks), pickPercentile(clicks, 70)))),
-    minimumP30Count: Math.max(20, Math.round(Math.max(trimmedMean(p30), pickPercentile(p30, 70)))),
-    minimumSignupCount: Math.max(5, Math.round(Math.max(trimmedMean(signups), pickPercentile(signups, 70))))
+    minimumClickCount,
+    minimumP30Count,
+    minimumSignupCount,
+    strongClickCount: Math.max(minimumClickCount * 2, Math.round(pickPercentile(clicks, 90))),
+    strongP30Count: Math.max(minimumP30Count * 2, Math.round(pickPercentile(p30, 90))),
+    strongSignupCount: Math.max(minimumSignupCount * 2, Math.round(pickPercentile(signups, 90)))
   };
 }
 
@@ -98,16 +106,20 @@ export function recalculatePriorities(store) {
     const organicFlag = Number(gsc?.click ?? 0) >= thresholds.minimumClickCount;
     const p30Flag = Number(p30?.metricValue ?? 0) >= thresholds.minimumP30Count;
     const signupFlag = Number(signup?.metricValue ?? 0) >= thresholds.minimumSignupCount;
+    const strongOrganicFlag = Number(gsc?.click ?? 0) >= thresholds.strongClickCount;
+    const strongP30Flag = Number(p30?.metricValue ?? 0) >= thresholds.strongP30Count;
+    const strongSignupFlag = Number(signup?.metricValue ?? 0) >= thresholds.strongSignupCount;
     const scaledFlag = Boolean(url.isScaledContent);
     const manualFlag = false;
     const combinedBusinessFlag = [organicFlag, p30Flag, signupFlag].filter(Boolean).length >= 2;
+    const strongBusinessFlag = strongOrganicFlag || strongP30Flag || strongSignupFlag;
 
     let tier = 'P3';
     if (url.isManuallyExcluded) {
       tier = 'Excluded';
     } else if (scaledFlag && url.currentIndexState !== 'stable_indexed') {
       tier = 'P0';
-    } else if (combinedBusinessFlag || manualFlag) {
+    } else if (combinedBusinessFlag || strongBusinessFlag || manualFlag) {
       tier = 'P1';
     } else if (organicFlag || p30Flag || signupFlag || (scaledFlag && url.currentIndexState === 'stable_indexed')) {
       tier = 'P2';
@@ -126,11 +138,15 @@ export function recalculatePriorities(store) {
       scaledFlag,
       manualFlag,
       combinedBusinessFlag,
+      strongBusinessFlag,
       scoreJson: {
         thresholds,
         click: Number(gsc?.click ?? 0),
         p30: Number(p30?.metricValue ?? 0),
-        signup: Number(signup?.metricValue ?? 0)
+        signup: Number(signup?.metricValue ?? 0),
+        strongOrganicFlag,
+        strongP30Flag,
+        strongSignupFlag
       },
       policyVersion: 'mvp-v1',
       createdAt: now

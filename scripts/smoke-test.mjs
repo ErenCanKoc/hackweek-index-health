@@ -44,11 +44,12 @@ assert.equal(excludedChildIndexSources.includes('https://www.jotform.com/sitemap
 
 const gscImportRows = ingestGscCsvText(
   store,
-  'url,click,impression,avg_position\nhttps://www.jotform.com/dashboard-csv-test/,25,400,7.2',
+  'url,click,impression,avg_position\nhttps://www.jotform.com/dashboard-csv-test/,10000,40000,7.2',
   'smoke:gsc'
 );
 assert.equal(gscImportRows, 1);
-assert.ok(store.state.urls.find((url) => url.normalizedUrl === 'https://www.jotform.com/dashboard-csv-test/'));
+const strongGscUrl = store.state.urls.find((url) => url.normalizedUrl === 'https://www.jotform.com/dashboard-csv-test/');
+assert.ok(strongGscUrl);
 
 const p30ImportRows = ingestBusinessWideCsvText(
   store,
@@ -68,6 +69,8 @@ const signupImportRows = ingestBusinessWideCsvText(
 assert.equal(signupImportRows, 2);
 assert.ok(store.state.businessMetrics.find((metric) => metric.path === '/dashboard-signup-test/' && metric.metricMonth === '2026-05-01' && metric.metricValue === 1234));
 assert.equal(store.state.businessMetrics.some((metric) => metric.metricMonth.toLowerCase() === 'url'), false);
+recalculatePriorities(store);
+assert.equal(strongGscUrl.currentPriorityTier, 'P1', 'expected a URL with a very strong single GSC signal to become P1');
 
 assert.equal(normalizeUrl('http://WWW.JOTFORM.com/blog/test/?utm_source=x&b=2&a=1#top'), 'https://www.jotform.com/blog/test/?a=1&b=2');
 assert.equal(normalizeUrl('https://www.jotform.com/tr/'), 'https://www.jotform.com/tr/');

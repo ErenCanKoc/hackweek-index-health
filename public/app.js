@@ -1672,6 +1672,30 @@ document.querySelector('#cleanup-orphans').addEventListener('click', async () =>
   }
 });
 
+document.querySelector('#recalculate-priorities').addEventListener('click', async () => {
+  setStatus('Recalculating priorities...');
+  document.querySelector('#recalculate-priorities').disabled = true;
+  try {
+    const response = await api('/api/settings/maintenance/recalculate-priorities', {
+      method: 'POST',
+      body: '{}',
+      timeoutMs: 45000
+    });
+    document.querySelector('#maintenance-result').innerHTML = `
+      <strong>Priorities recalculated.</strong>
+      Click threshold: ${response.thresholds?.minimumClickCount ?? '-'} ·
+      P30 threshold: ${response.thresholds?.minimumP30Count ?? '-'} ·
+      Signup threshold: ${response.thresholds?.minimumSignupCount ?? '-'}
+    `;
+    await refresh();
+    setStatus('Priorities recalculated.');
+  } catch (error) {
+    setStatus(`Priority recalculation failed: ${error.message}`);
+  } finally {
+    document.querySelector('#recalculate-priorities').disabled = false;
+  }
+});
+
 document.querySelector('#sync-dashboard-cache').addEventListener('click', async () => {
   setStatus('Syncing dashboard cache...');
   document.querySelector('#sync-dashboard-cache').disabled = true;

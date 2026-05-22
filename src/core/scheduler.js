@@ -1,7 +1,7 @@
 import { maybeCreateResultAlerts, upsertActiveAlert } from './alerts.js';
 import { createInspectionProvider } from './inspectionProvider.js';
 import { chooseBestProperty, incrementQuota, resetDailyQuotasIfNeeded, resolveEligibleProperties } from './propertyResolver.js';
-import { recalculatePriorities } from './priority.js';
+import { calculateThresholds, recalculatePriorities } from './priority.js';
 import {
   calculateNextDueAt,
   nextStateFromInspection,
@@ -39,17 +39,35 @@ export function alreadyInspectedToday(store, urlRecord, now = new Date()) {
   ));
 }
 
+function inspectedTodayUrlIds(store, now = new Date()) {
+  const today = dateKey(now);
+  return new Set((store.state.inspectionResults ?? [])
+    .filter((result) => dateKey(result.inspectedAt) === today)
+    .map((result) => Number(result.urlId)));
+}
+
+function existingJobKeys(store, today, force = false) {
+  const statuses = force ? new Set(['pending', 'running']) : new Set(['pending', 'running', 'completed']);
+  return new Set((store.state.inspectionJobs ?? [])
+    .filter((job) => statuses.has(job.status) && dateKey(job.dueAt) === today)
+    .map((job) => `${Number(job.urlId)}:${job.reason}`));
+}
+
 export function ensureJobsForDueUrls(store, policy, now = new Date(), options = {}) {
   const nowIsoValue = now.toISOString();
   const today = dateKey(now);
   const force = Boolean(options.force);
   const targetUrlId = options.urlId ? Number(options.urlId) : null;
+  const createLimit = targetUrlId ? 1 : Math.max(1, Number(options.createLimit ?? options.limit ?? 100) || 100);
+  const inspectedToday = inspectedTodayUrlIds(store, now);
+  const duplicateKeys = existingJobKeys(store, today, force);
   let created = 0;
 
   for (const url of store.state.urls) {
+    if (created >= createLimit) break;
     if (targetUrlId && Number(url.id) !== targetUrlId) continue;
     if (!url.isActive || url.isManuallyExcluded || url.currentPriorityTier === 'Excluded') continue;
-    if (!force && alreadyInspectedToday(store, url, now)) continue;
+    if (!force && inspectedToday.has(Number(url.id))) continue;
 
     const dueAt = url.nextInspectionDueAt ?? url.firstSeenAt ?? nowIsoValue;
     const due = new Date(dueAt) <= now;
@@ -64,13 +82,8 @@ export function ensureJobsForDueUrls(store, policy, now = new Date(), options = 
       else if (url.currentPriorityTier === 'P3') reason = 'monthly_coverage';
     }
 
-    const duplicate = store.state.inspectionJobs.some((job) => (
-      job.urlId === url.id
-      && job.reason === reason
-      && dateKey(job.dueAt) === today
-      && (force ? ['pending', 'running'].includes(job.status) : ['pending', 'running', 'completed'].includes(job.status))
-    ));
-    if (duplicate) continue;
+    const duplicateKey = `${Number(url.id)}:${reason}`;
+    if (duplicateKeys.has(duplicateKey)) continue;
 
     store.insert('inspectionJobs', {
       urlId: url.id,
@@ -89,6 +102,7 @@ export function ensureJobsForDueUrls(store, policy, now = new Date(), options = 
       createdAt: nowIsoValue,
       updatedAt: nowIsoValue
     });
+    duplicateKeys.add(duplicateKey);
     created += 1;
   }
 
@@ -147,10 +161,18 @@ export async function runScheduler(store, config, options = {}) {
   const force = Boolean(options.force);
   const targetUrlId = options.urlId ? Number(options.urlId) : null;
   const provider = options.provider ?? createInspectionProvider(config.policy);
+  const recalculatePriorityTiers = options.recalculatePriorities === true;
+  const thresholds = recalculatePriorityTiers ? recalculatePriorities(store) : calculateThresholds(store);
   const summary = {
-    thresholds: recalculatePriorities(store),
+    thresholds,
+    priorityRecalculated: recalculatePriorityTiers,
     quotaResets: resetDailyQuotasIfNeeded(store, now),
-    createdJobs: ensureJobsForDueUrls(store, config.policy, now, { force, urlId: targetUrlId }),
+    createdJobs: ensureJobsForDueUrls(store, config.policy, now, {
+      force,
+      urlId: targetUrlId,
+      limit,
+      createLimit: options.createLimit ?? Math.max(limit * 2, limit)
+    }),
     inspected: 0,
     skipped: 0,
     alertsCreated: 0,

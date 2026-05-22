@@ -3755,7 +3755,8 @@ function schedulerRunOptions(body = {}) {
     force: Boolean(body.force),
     urlId: body.urlId ? Number(body.urlId) : null,
     url: body.url ? String(body.url) : null,
-    propertyUrl: body.propertyUrl ? String(body.propertyUrl) : null
+    propertyUrl: body.propertyUrl ? String(body.propertyUrl) : null,
+    recalculatePriorities: body.recalculatePriorities === true
   };
 }
 
@@ -3848,7 +3849,8 @@ async function triggerRenderOneOffSchedulerJob(options = {}) {
   const runOptions = schedulerRunOptions(options);
   const env = [
     `SCHEDULER_LIMIT=${runOptions.limit}`,
-    `SCHEDULER_FORCE=${runOptions.force ? 'true' : 'false'}`
+    `SCHEDULER_FORCE=${runOptions.force ? 'true' : 'false'}`,
+    `SCHEDULER_RECALCULATE_PRIORITIES=${runOptions.recalculatePriorities ? 'true' : 'false'}`
   ];
   if (runOptions.urlId) env.push(`SCHEDULER_URL_ID=${runOptions.urlId}`);
   const startCommand = `${env.join(' ')} node scripts/run-scheduler.mjs`;
@@ -3946,7 +3948,7 @@ async function startSchedulerAction(body = {}) {
     };
   }
 
-  const preferredMode = renderOneOffConfig().apiKey && renderOneOffConfig().serviceId ? 'render_one_off' : 'local_background';
+  const preferredMode = context ? 'local_background' : (renderOneOffConfig().apiKey && renderOneOffConfig().serviceId ? 'render_one_off' : 'local_background');
   if (preferredMode === 'render_one_off') {
     try {
       const renderJob = await triggerRenderOneOffSchedulerJob(options);
@@ -4604,6 +4606,14 @@ const server = http.createServer(async (request, response) => {
       });
       await context.store.save();
       sendJson(response, 200, { ok: true, removedOrphanUrls, result });
+      return;
+    }
+
+    if (pathname === '/api/settings/maintenance/recalculate-priorities' && request.method === 'POST') {
+      const thresholds = recalculatePriorities(context.store);
+      await context.store.save();
+      const cache = await refreshDashboardCache().catch((error) => ({ error: error.message }));
+      sendJson(response, 200, { ok: true, thresholds, cache });
       return;
     }
 
