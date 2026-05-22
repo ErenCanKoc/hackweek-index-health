@@ -456,8 +456,8 @@ async function loadUrls() {
         <td>${fmtDate(url.nextInspectionDueAt)}</td>
         <td>
           <div class="row-actions">
-            <button class="small-button" data-detail="${url.id}">${Number(state.openUrlId) === Number(url.id) ? 'Close' : 'Open'}</button>
-            <a class="small-button" href="${esc(url.normalizedUrl)}" target="_blank" rel="noopener noreferrer">Preview</a>
+            <a class="small-button" href="${esc(url.normalizedUrl)}" target="_blank" rel="noopener noreferrer">Open</a>
+            <button class="small-button" data-detail="${url.id}">${Number(state.openUrlId) === Number(url.id) ? 'Close' : 'Details'}</button>
             <button class="small-button" data-inspect-now="${url.id}">Inspect</button>
             <button class="small-button" data-exclude="${url.id}">${url.isManuallyExcluded ? 'Include' : 'Exclude'}</button>
           </div>
