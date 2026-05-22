@@ -646,10 +646,13 @@ async function ensureDashboardCacheTables() {
       current_index_state TEXT,
       current_health_state TEXT,
       is_scaled_content BOOLEAN NOT NULL DEFAULT FALSE,
+      scaled_content_type TEXT,
       is_manually_excluded BOOLEAN NOT NULL DEFAULT FALSE,
       is_active BOOLEAN NOT NULL DEFAULT TRUE,
       next_inspection_due_at TIMESTAMPTZ,
       first_seen_at TIMESTAMPTZ,
+      first_indexed_at TIMESTAMPTZ,
+      last_inspected_at TIMESTAMPTZ,
       last_seen_at TIMESTAMPTZ,
       source_sitemaps JSONB NOT NULL DEFAULT '[]'::jsonb,
       source_text TEXT NOT NULL DEFAULT '',
@@ -659,6 +662,9 @@ async function ensureDashboardCacheTables() {
     ALTER TABLE dashboard_urls DROP COLUMN IF EXISTS row_json;
     ALTER TABLE dashboard_urls ADD COLUMN IF NOT EXISTS source_sitemaps JSONB NOT NULL DEFAULT '[]'::jsonb;
     ALTER TABLE dashboard_urls ADD COLUMN IF NOT EXISTS source_text TEXT NOT NULL DEFAULT '';
+    ALTER TABLE dashboard_urls ADD COLUMN IF NOT EXISTS first_indexed_at TIMESTAMPTZ;
+    ALTER TABLE dashboard_urls ADD COLUMN IF NOT EXISTS last_inspected_at TIMESTAMPTZ;
+    ALTER TABLE dashboard_urls ADD COLUMN IF NOT EXISTS scaled_content_type TEXT;
     DROP INDEX IF EXISTS idx_dashboard_urls_normalized;
     DROP INDEX IF EXISTS idx_dashboard_urls_source_text;
 
@@ -700,10 +706,13 @@ async function refreshDashboardCache() {
           current_index_state,
           current_health_state,
           is_scaled_content,
+          scaled_content_type,
           is_manually_excluded,
           is_active,
           next_inspection_due_at,
           first_seen_at,
+          first_indexed_at,
+          last_inspected_at,
           last_seen_at,
           source_sitemaps,
           source_text,
@@ -719,10 +728,13 @@ async function refreshDashboardCache() {
           elem ->> 'currentIndexState',
           elem ->> 'currentHealthState',
           COALESCE((elem ->> 'isScaledContent')::boolean, false),
+          elem ->> 'scaledContentType',
           COALESCE((elem ->> 'isManuallyExcluded')::boolean, false),
           COALESCE((elem ->> 'isActive')::boolean, true),
           NULLIF(elem ->> 'nextInspectionDueAt', '')::timestamptz,
           NULLIF(elem ->> 'firstSeenAt', '')::timestamptz,
+          NULLIF(elem ->> 'firstIndexedAt', '')::timestamptz,
+          NULLIF(elem ->> 'lastInspectedAt', '')::timestamptz,
           NULLIF(elem ->> 'lastSeenAt', '')::timestamptz,
           '[]'::jsonb,
           '',
@@ -740,10 +752,13 @@ async function refreshDashboardCache() {
               current_index_state = EXCLUDED.current_index_state,
               current_health_state = EXCLUDED.current_health_state,
               is_scaled_content = EXCLUDED.is_scaled_content,
+              scaled_content_type = EXCLUDED.scaled_content_type,
               is_manually_excluded = EXCLUDED.is_manually_excluded,
               is_active = EXCLUDED.is_active,
               next_inspection_due_at = EXCLUDED.next_inspection_due_at,
               first_seen_at = EXCLUDED.first_seen_at,
+              first_indexed_at = EXCLUDED.first_indexed_at,
+              last_inspected_at = EXCLUDED.last_inspected_at,
               last_seen_at = EXCLUDED.last_seen_at,
               source_sitemaps = EXCLUDED.source_sitemaps,
               source_text = EXCLUDED.source_text,
@@ -1067,6 +1082,181 @@ async function readCachedOverview() {
     lite: true,
     cached: true
   };
+}
+
+async function readCachedScaledDashboard() {
+  const pool = getLitePool();
+  if (!pool) return null;
+  await ensureDashboardCacheTables();
+  if (await cachedTableCount('dashboard_urls') === 0 && process.env.AUTO_SYNC_DASHBOARD_CACHE === 'true') {
+    await refreshDashboardCache();
+  }
+  if (await cachedTableCount('dashboard_urls') === 0) {
+    throw new Error('dashboard_urls cache is empty. Run /api/settings/maintenance/sync-cache after heavy imports.');
+  }
+
+  const result = await pool.query(
+    `
+      WITH scaled AS (
+        SELECT *
+        FROM dashboard_urls
+        WHERE is_scaled_content = true
+          AND is_manually_excluded = false
+      ),
+      indexed_durations AS (
+        SELECT EXTRACT(EPOCH FROM (first_indexed_at - first_seen_at)) / 86400.0 AS days
+        FROM scaled
+        WHERE first_indexed_at IS NOT NULL
+          AND first_seen_at IS NOT NULL
+          AND first_indexed_at >= first_seen_at
+      ),
+      kpis AS (
+        SELECT
+          COUNT(*) FILTER (WHERE first_seen_at::date = CURRENT_DATE)::int AS new_scaled_urls_today,
+          COUNT(*)::int AS scaled_total,
+          COUNT(*) FILTER (
+            WHERE last_inspected_at IS NOT NULL
+              AND first_seen_at IS NOT NULL
+              AND last_inspected_at - first_seen_at <= interval '24 hours'
+          )::int AS first_inspected_24h,
+          COUNT(*) FILTER (
+            WHERE first_indexed_at IS NOT NULL
+              AND first_seen_at IS NOT NULL
+              AND first_indexed_at - first_seen_at <= interval '1 day'
+          )::int AS indexed_1d,
+          COUNT(*) FILTER (
+            WHERE first_indexed_at IS NOT NULL
+              AND first_seen_at IS NOT NULL
+              AND first_indexed_at - first_seen_at <= interval '3 days'
+          )::int AS indexed_3d,
+          COUNT(*) FILTER (WHERE current_index_state IN ('discovered_not_indexed', 'not_indexed'))::int AS delayed_index_count,
+          COUNT(*) FILTER (WHERE first_indexed_at IS NULL AND first_seen_at <= now() - interval '3 days')::int AS delayed_3d_count,
+          COUNT(*) FILTER (WHERE first_indexed_at IS NULL AND first_seen_at <= now() - interval '7 days')::int AS delayed_7d_count,
+          COUNT(*) FILTER (WHERE current_index_state IN ('index_loss_suspected', 'index_lost_confirmed'))::int AS index_loss_count,
+          COUNT(*) FILTER (WHERE current_index_state = 'stable_indexed')::int AS stable_indexed_count
+        FROM scaled
+      ),
+      duration_stats AS (
+        SELECT
+          COALESCE(ROUND(AVG(days))::int, 0) AS average_days_to_index,
+          COALESCE(ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY days))::int, 0) AS median_days_to_index,
+          COALESCE(ROUND(percentile_cont(0.9) WITHIN GROUP (ORDER BY days))::int, 0) AS p90_days_to_index
+        FROM indexed_durations
+      ),
+      tab_rows AS (
+        SELECT
+          'adcraft' AS tab,
+          COALESCE(jsonb_agg(row_json ORDER BY id ASC), '[]'::jsonb) AS rows
+        FROM (
+          SELECT id, ${cachedScaledRowJsonSql()} AS row_json
+          FROM scaled
+          WHERE scaled_content_type = 'adcraft'
+          ORDER BY id ASC
+          LIMIT 200
+        ) rows
+        UNION ALL
+        SELECT
+          'delayedIndexing' AS tab,
+          COALESCE(jsonb_agg(row_json ORDER BY id ASC), '[]'::jsonb) AS rows
+        FROM (
+          SELECT id, ${cachedScaledRowJsonSql()} AS row_json
+          FROM scaled
+          WHERE current_index_state IN ('discovered_not_indexed', 'not_indexed')
+          ORDER BY id ASC
+          LIMIT 200
+        ) rows
+        UNION ALL
+        SELECT
+          'indexLost' AS tab,
+          COALESCE(jsonb_agg(row_json ORDER BY id ASC), '[]'::jsonb) AS rows
+        FROM (
+          SELECT id, ${cachedScaledRowJsonSql()} AS row_json
+          FROM scaled
+          WHERE current_index_state IN ('index_loss_suspected', 'index_lost_confirmed')
+          ORDER BY id ASC
+          LIMIT 200
+        ) rows
+        UNION ALL
+        SELECT
+          'stableIndexed' AS tab,
+          COALESCE(jsonb_agg(row_json ORDER BY id ASC), '[]'::jsonb) AS rows
+        FROM (
+          SELECT id, ${cachedScaledRowJsonSql()} AS row_json
+          FROM scaled
+          WHERE current_index_state = 'stable_indexed'
+          ORDER BY id ASC
+          LIMIT 200
+        ) rows
+      )
+      SELECT
+        kpis.*,
+        duration_stats.*,
+        COALESCE(jsonb_object_agg(tab_rows.tab, tab_rows.rows), '{}'::jsonb) AS tabs
+      FROM kpis, duration_stats, tab_rows
+      GROUP BY
+        kpis.new_scaled_urls_today,
+        kpis.scaled_total,
+        kpis.first_inspected_24h,
+        kpis.indexed_1d,
+        kpis.indexed_3d,
+        kpis.delayed_index_count,
+        kpis.delayed_3d_count,
+        kpis.delayed_7d_count,
+        kpis.index_loss_count,
+        kpis.stable_indexed_count,
+        duration_stats.average_days_to_index,
+        duration_stats.median_days_to_index,
+        duration_stats.p90_days_to_index
+    `
+  );
+  const row = result.rows[0] ?? {};
+  const scaledTotal = Number(row.scaled_total ?? 0);
+  return {
+    tabs: {
+      adcraft: row.tabs?.adcraft ?? [],
+      delayedIndexing: row.tabs?.delayedIndexing ?? [],
+      indexLost: row.tabs?.indexLost ?? [],
+      stableIndexed: row.tabs?.stableIndexed ?? [],
+      recovered: []
+    },
+    kpis: {
+      newScaledUrlsToday: Number(row.new_scaled_urls_today ?? 0),
+      firstInspectedWithin24hPercent: scaledTotal ? Math.round((Number(row.first_inspected_24h ?? 0) / scaledTotal) * 100) : 0,
+      indexedWithin1DayPercent: scaledTotal ? Math.round((Number(row.indexed_1d ?? 0) / scaledTotal) * 100) : 0,
+      indexedWithin3DaysPercent: scaledTotal ? Math.round((Number(row.indexed_3d ?? 0) / scaledTotal) * 100) : 0,
+      averageDaysToIndex: Number(row.average_days_to_index ?? 0),
+      medianDaysToIndex: Number(row.median_days_to_index ?? 0),
+      p90DaysToIndex: Number(row.p90_days_to_index ?? 0),
+      delayedIndexCount: Number(row.delayed_index_count ?? 0),
+      delayed3DaysCount: Number(row.delayed_3d_count ?? 0),
+      delayed7DaysCount: Number(row.delayed_7d_count ?? 0),
+      indexLossCount: Number(row.index_loss_count ?? 0),
+      stableIndexedCount: Number(row.stable_indexed_count ?? 0)
+    },
+    lite: true,
+    cached: true
+  };
+}
+
+function cachedScaledRowJsonSql() {
+  return `
+    jsonb_build_object(
+      'id', id,
+      'normalizedUrl', normalized_url,
+      'url', url,
+      'category', category,
+      'locale', locale,
+      'currentPriorityTier', current_priority_tier,
+      'currentIndexState', current_index_state,
+      'currentHealthState', current_health_state,
+      'isScaledContent', is_scaled_content,
+      'scaledContentType', scaled_content_type,
+      'firstSeenAt', first_seen_at,
+      'firstIndexedAt', first_indexed_at,
+      'lastInspectedAt', last_inspected_at,
+      'nextInspectionDueAt', next_inspection_due_at
+    )
+  `;
 }
 
 function normalizeUrlsForDeletion(values) {
@@ -1762,11 +1952,16 @@ async function handleLiteApi(pathname, parsed, request, response) {
   }
 
   if (pathname === '/api/scaled') {
-    const [urls, alerts] = await Promise.all([
-      readAppStateArray('urls'),
-      readAppStateArray('alerts')
-    ]);
-    sendJson(response, 200, liteScaledDashboardFromArrays(urls, alerts));
+    try {
+      sendJson(response, 200, await readCachedScaledDashboard());
+    } catch (error) {
+      console.error('Cached scaled dashboard failed:', error.message);
+      if (process.env.ENABLE_APP_STATE_URL_FALLBACK !== 'true') {
+        throw new Error(`Scaled cache unavailable. Run /api/settings/maintenance/sync-cache after heavy imports. Cause: ${error.message}`);
+      }
+      const urls = await readAppStateArray('urls');
+      sendJson(response, 200, liteScaledDashboardFromArrays(urls, []));
+    }
     return true;
   }
 

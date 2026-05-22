@@ -22,15 +22,22 @@ export async function ensureDashboardCacheTables() {
       current_index_state TEXT,
       current_health_state TEXT,
       is_scaled_content BOOLEAN NOT NULL DEFAULT false,
+      scaled_content_type TEXT,
       is_manually_excluded BOOLEAN NOT NULL DEFAULT false,
       is_active BOOLEAN NOT NULL DEFAULT true,
       next_inspection_due_at TIMESTAMPTZ,
       first_seen_at TIMESTAMPTZ,
+      first_indexed_at TIMESTAMPTZ,
+      last_inspected_at TIMESTAMPTZ,
       last_seen_at TIMESTAMPTZ,
       source_sitemaps JSONB NOT NULL DEFAULT '[]'::jsonb,
       source_text TEXT NOT NULL DEFAULT '',
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
+
+    ALTER TABLE dashboard_urls ADD COLUMN IF NOT EXISTS first_indexed_at TIMESTAMPTZ;
+    ALTER TABLE dashboard_urls ADD COLUMN IF NOT EXISTS last_inspected_at TIMESTAMPTZ;
+    ALTER TABLE dashboard_urls ADD COLUMN IF NOT EXISTS scaled_content_type TEXT;
 
     CREATE TABLE IF NOT EXISTS dashboard_properties (
       id BIGINT PRIMARY KEY,
@@ -62,8 +69,9 @@ export async function refreshDashboardCache() {
         INSERT INTO dashboard_urls (
           id, normalized_url, url, category, locale, current_priority_tier,
           current_index_state, current_health_state, is_scaled_content,
-          is_manually_excluded, is_active, next_inspection_due_at,
-          first_seen_at, last_seen_at, source_sitemaps, source_text, updated_at
+          scaled_content_type, is_manually_excluded, is_active, next_inspection_due_at,
+          first_seen_at, first_indexed_at, last_inspected_at, last_seen_at,
+          source_sitemaps, source_text, updated_at
         )
         SELECT
           (elem ->> 'id')::bigint,
@@ -75,10 +83,13 @@ export async function refreshDashboardCache() {
           elem ->> 'currentIndexState',
           elem ->> 'currentHealthState',
           COALESCE((elem ->> 'isScaledContent')::boolean, false),
+          elem ->> 'scaledContentType',
           COALESCE((elem ->> 'isManuallyExcluded')::boolean, false),
           COALESCE((elem ->> 'isActive')::boolean, true),
           NULLIF(elem ->> 'nextInspectionDueAt', '')::timestamptz,
           NULLIF(elem ->> 'firstSeenAt', '')::timestamptz,
+          NULLIF(elem ->> 'firstIndexedAt', '')::timestamptz,
+          NULLIF(elem ->> 'lastInspectedAt', '')::timestamptz,
           NULLIF(elem ->> 'lastSeenAt', '')::timestamptz,
           '[]'::jsonb,
           '',
@@ -96,10 +107,13 @@ export async function refreshDashboardCache() {
               current_index_state = EXCLUDED.current_index_state,
               current_health_state = EXCLUDED.current_health_state,
               is_scaled_content = EXCLUDED.is_scaled_content,
+              scaled_content_type = EXCLUDED.scaled_content_type,
               is_manually_excluded = EXCLUDED.is_manually_excluded,
               is_active = EXCLUDED.is_active,
               next_inspection_due_at = EXCLUDED.next_inspection_due_at,
               first_seen_at = EXCLUDED.first_seen_at,
+              first_indexed_at = EXCLUDED.first_indexed_at,
+              last_inspected_at = EXCLUDED.last_inspected_at,
               last_seen_at = EXCLUDED.last_seen_at,
               source_sitemaps = EXCLUDED.source_sitemaps,
               source_text = EXCLUDED.source_text,
