@@ -175,8 +175,16 @@ function kpis(items) {
 }
 
 function schedulerStatus(summary) {
+  if (!summary) return 'Scheduler started in the background. You can keep using the dashboard.';
   const errors = summary.errors?.length ? ` Errors ${summary.errors.length}: ${summary.errors.map((item) => item.error).join(' | ')}` : '';
   return `Scheduler created ${summary.createdJobs}, inspected ${summary.inspected}, skipped ${summary.skipped}, alerts ${summary.alertsCreated}.${errors}`;
+}
+
+function schedulerStartStatus(result) {
+  if (result.summary) return schedulerStatus(result.summary);
+  const mode = result.triggerMode === 'render_one_off' ? 'Render one-off job' : 'background job';
+  const jobId = result.renderJob?.id ? ` ${result.renderJob.id}` : '';
+  return `Scheduler started as ${mode}${jobId}. You can keep using the dashboard.`;
 }
 
 function propertySource(property) {
@@ -1042,10 +1050,8 @@ document.addEventListener('click', async (event) => {
       method: 'POST',
       body: JSON.stringify({ limit: 1, force: true, urlId: id })
     });
-    state.openUrlId = id;
-    state.openUrlDetail = await api(`/api/urls/${id}`);
-    await refresh();
-    setStatus(schedulerStatus(result.summary));
+    await openDetail(id);
+    setStatus(schedulerStartStatus(result));
     return;
   }
 
@@ -1165,17 +1171,15 @@ document.querySelector('#seed-button').addEventListener('click', async () => {
 });
 
 document.querySelector('#scheduler-button').addEventListener('click', async () => {
-  setStatus('Running scheduler...');
+  setStatus('Starting scheduler...');
   const result = await api('/api/actions/run-scheduler', { method: 'POST', body: JSON.stringify({ limit: 100 }) });
-  await refresh();
-  setStatus(schedulerStatus(result.summary));
+  setStatus(schedulerStartStatus(result));
 });
 
 document.querySelector('#force-scheduler-button').addEventListener('click', async () => {
-  setStatus('Running forced GSC test...');
+  setStatus('Starting forced GSC test...');
   const result = await api('/api/actions/run-scheduler', { method: 'POST', body: JSON.stringify({ limit: 50, force: true }) });
-  await refresh();
-  setStatus(schedulerStatus(result.summary));
+  setStatus(schedulerStartStatus(result));
 });
 
 document.querySelector('#save-google-client').addEventListener('click', async () => {

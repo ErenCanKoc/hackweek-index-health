@@ -1948,6 +1948,12 @@ async function handleLiteApi(pathname, parsed, request, response) {
     return true;
   }
 
+  if (pathname === '/api/actions/run-scheduler' && request.method === 'POST') {
+    const result = await startSchedulerAction(await readBody(request));
+    sendJson(response, result.accepted ? 202 : 503, { ok: result.accepted, ...result, lite: true });
+    return true;
+  }
+
   if (pathname === '/api/csv-import-jobs') {
     await recoverStaleCsvImportJobs().catch((error) => {
       console.error('Failed to recover stale CSV import jobs:', error.message);
@@ -3091,6 +3097,81 @@ async function triggerRenderOneOffCsvImportJob(jobId) {
   return { ...payload, startCommand };
 }
 
+function schedulerRunOptions(body = {}) {
+  return {
+    limit: Math.max(1, Math.min(Number(body.limit ?? 100) || 100, 1000)),
+    force: Boolean(body.force),
+    urlId: body.urlId ? Number(body.urlId) : null
+  };
+}
+
+async function triggerRenderOneOffSchedulerJob(options = {}) {
+  const { apiKey, serviceId } = renderOneOffConfig();
+  if (!apiKey || !serviceId) return null;
+  const runOptions = schedulerRunOptions(options);
+  const env = [
+    `SCHEDULER_LIMIT=${runOptions.limit}`,
+    `SCHEDULER_FORCE=${runOptions.force ? 'true' : 'false'}`
+  ];
+  if (runOptions.urlId) env.push(`SCHEDULER_URL_ID=${runOptions.urlId}`);
+  const startCommand = `${env.join(' ')} node scripts/run-scheduler.mjs`;
+  const response = await fetch(`https://api.render.com/v1/services/${encodeURIComponent(serviceId)}/jobs`, {
+    method: 'POST',
+    headers: {
+      accept: 'application/json',
+      authorization: `Bearer ${apiKey}`,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({ startCommand })
+  });
+  const text = await response.text();
+  let payload = null;
+  try {
+    payload = text ? JSON.parse(text) : null;
+  } catch {
+    payload = { raw: text };
+  }
+  if (!response.ok) {
+    throw new Error(`Render scheduler job create failed ${response.status}: ${payload?.message ?? payload?.error ?? text}`);
+  }
+  return { ...payload, startCommand, options: runOptions };
+}
+
+async function startSchedulerAction(body = {}) {
+  const options = schedulerRunOptions(body);
+  const preferredMode = renderOneOffConfig().apiKey && renderOneOffConfig().serviceId ? 'render_one_off' : 'local_background';
+  if (preferredMode === 'render_one_off') {
+    try {
+      const renderJob = await triggerRenderOneOffSchedulerJob(options);
+      return { accepted: true, triggerMode: 'render_one_off', renderJob, options };
+    } catch (error) {
+      console.error('Render one-off scheduler job trigger failed, falling back to local background runner:', error);
+    }
+  }
+
+  if (!context) {
+    return {
+      accepted: false,
+      triggerMode: preferredMode,
+      options,
+      error: 'App context is still loading and Render one-off scheduler is not configured.'
+    };
+  }
+
+  runScheduler(context.store, context.config, options)
+    .then(async (summary) => {
+      await context.store.save();
+      await refreshDashboardCache().catch((error) => console.error('Dashboard cache refresh failed after scheduler:', error.message));
+      cronState.lastResult = { reason: 'manual_scheduler', summary, completedAt: nowIso() };
+      cronState.lastError = null;
+    })
+    .catch((error) => {
+      cronState.lastError = error.message;
+      console.error('Background scheduler failed:', error);
+    });
+  return { accepted: true, triggerMode: 'local_background', options };
+}
+
 async function startCsvImportAction(options = {}) {
   const preferredMode = renderOneOffConfig().apiKey && renderOneOffConfig().serviceId ? 'render_one_off' : 'local';
   const createJob = process.env.DATABASE_URL ? createChunkedCsvImportJob : createCsvImportJob;
@@ -3963,14 +4044,8 @@ const server = http.createServer(async (request, response) => {
     }
 
     if (pathname === '/api/actions/run-scheduler' && request.method === 'POST') {
-      const body = await readBody(request);
-      const summary = await runScheduler(context.store, context.config, {
-        limit: body.limit ?? 100,
-        force: Boolean(body.force),
-        urlId: body.urlId ? Number(body.urlId) : null
-      });
-      await context.store.save();
-      sendJson(response, 200, { ok: true, summary });
+      const result = await startSchedulerAction(await readBody(request));
+      sendJson(response, result.accepted ? 202 : 503, { ok: result.accepted, ...result });
       return;
     }
 

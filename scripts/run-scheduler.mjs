@@ -1,7 +1,14 @@
 import { createContext } from '../src/core/bootstrap.js';
+import { refreshDashboardCache } from '../src/core/dashboardCache.js';
 import { runScheduler } from '../src/core/scheduler.js';
 
 const context = await createContext();
-const summary = await runScheduler(context.store, context.config, { limit: Number(process.argv[2] ?? 100) });
+const limit = Number(process.argv[2] ?? process.env.SCHEDULER_LIMIT ?? 100);
+const force = process.env.SCHEDULER_FORCE === 'true';
+const urlId = process.env.SCHEDULER_URL_ID ? Number(process.env.SCHEDULER_URL_ID) : null;
+const summary = await runScheduler(context.store, context.config, { limit, force, urlId });
 await context.store.save();
-console.log(JSON.stringify({ ok: true, summary }, null, 2));
+await refreshDashboardCache().catch((error) => {
+  console.error('Dashboard cache refresh failed after scheduler:', error.message);
+});
+console.log(JSON.stringify({ ok: true, summary, options: { limit, force, urlId } }, null, 2));
