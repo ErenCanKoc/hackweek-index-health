@@ -999,6 +999,16 @@ function shouldPreferLiteApi(pathname, method) {
     || pathname === '/api/roadmap';
 }
 
+function shouldPreferLiteMutation(pathname, method) {
+  if (!process.env.DATABASE_URL || method !== 'POST') return false;
+  return pathname === '/api/settings/manual-url'
+    || pathname === '/api/settings/inspection'
+    || pathname === '/api/settings/sources'
+    || pathname === '/api/settings/sources/delete'
+    || pathname === '/api/settings/sitemaps/delete'
+    || pathname === '/api/settings/delete-urls';
+}
+
 function nextDueForLitePriority(priorityTier) {
   if (priorityTier === 'Excluded') return null;
   const days = { P0: 1, P1: 7, P2: 15, P3: 30 }[priorityTier] ?? 30;
@@ -3690,6 +3700,20 @@ const server = http.createServer(async (request, response) => {
           sendJson(response, 200, emergencyPayload);
           return;
         }
+      }
+    }
+
+    if (shouldPreferLiteMutation(pathname, request.method)) {
+      try {
+        const handledLite = await handleLiteApi(pathname, parsed, request, response);
+        if (handledLite) return;
+      } catch (error) {
+        console.error('Preferred lite mutation failed:', error);
+        sendJson(response, apiErrorStatus(error, 502), apiErrorPayload(error, {
+          path: pathname,
+          lite: true
+        }));
+        return;
       }
     }
 

@@ -1494,19 +1494,31 @@ document.querySelector('#delete-selected-urls').addEventListener('click', async 
 
 document.querySelector('#add-manual-url').addEventListener('click', async () => {
   setStatus('Adding URL...');
-  await api('/api/settings/manual-url', {
-    method: 'POST',
-    body: JSON.stringify({
-      url: document.querySelector('#manual-url').value,
-      category: document.querySelector('#manual-category').value,
-      locale: document.querySelector('#manual-locale').value,
-      priorityTier: document.querySelector('#manual-priority').value,
-      isScaledContent: document.querySelector('#manual-scaled').checked,
-      scaledContentType: document.querySelector('#manual-scaled-type').value
-    })
-  });
-  document.querySelector('#manual-url').value = '';
-  await refresh();
+  const payload = {
+    url: document.querySelector('#manual-url').value,
+    category: document.querySelector('#manual-category').value,
+    locale: document.querySelector('#manual-locale').value,
+    priorityTier: document.querySelector('#manual-priority').value,
+    isScaledContent: document.querySelector('#manual-scaled').checked,
+    scaledContentType: document.querySelector('#manual-scaled-type').value
+  };
+  try {
+    await api('/api/settings/manual-url', {
+      method: 'POST',
+      timeoutMs: 8000,
+      body: JSON.stringify(payload)
+    });
+    document.querySelector('#manual-url').value = '';
+    setStatus('URL added. Refreshing dashboard...');
+    await refresh();
+  } catch (error) {
+    if (isDatabaseBusyMessage(error.message) || error.message.includes('timed out')) {
+      document.querySelector('#manual-url').value = '';
+      setStatus('URL add request is still processing. Run Sync Cache or refresh in a moment.');
+      return;
+    }
+    throw error;
+  }
 });
 
 document.querySelector('#csv-import-file').addEventListener('change', async (event) => {
