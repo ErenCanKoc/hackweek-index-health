@@ -1150,7 +1150,8 @@ async function readCachedScaledDashboard() {
         FROM (
           SELECT id, ${cachedScaledRowJsonSql()} AS row_json
           FROM scaled
-          WHERE scaled_content_type = 'adcraft'
+          WHERE COALESCE(scaled_content_type, '') IN ('', 'adcraft')
+            OR source_text ILIKE '%adcraft%'
           ORDER BY id ASC
           LIMIT 200
         ) rows
