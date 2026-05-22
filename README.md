@@ -100,21 +100,22 @@ SITEMAP_FETCH_CONCURRENCY=4
 SITEMAP_FETCH_BATCH_SIZE=50
 SITEMAP_FETCH_RECALCULATE_PRIORITIES=false
 SITEMAP_FETCH_RUN_SCHEDULER=false
-DATABASE_POOL_MAX=1
-DATABASE_LITE_POOL_MAX=1
+DATABASE_LITE_POOL_MAX=4
 DATABASE_STORE_POOL_MAX=1
 DATABASE_CACHE_POOL_MAX=1
 DATABASE_CSV_JOB_POOL_MAX=1
 DATABASE_SITEMAP_JOB_POOL_MAX=1
 DATABASE_LOCK_POOL_MAX=1
-DATABASE_CONNECTION_TIMEOUT_MS=30000
+DATABASE_CONNECTION_TIMEOUT_MS=2500
+DATABASE_QUERY_TIMEOUT_MS=8000
+LITE_READ_TIMEOUT_MS=2500
 ENABLE_APP_STATE_URL_FALLBACK=false
 ```
 
 `ADMIN_PASSWORD` enables the built-in dashboard login. Without it, the app remains open for local development.
 `RENDER_API_KEY` and `RENDER_SERVICE_ID` let the dashboard start sitemap fetching as a Render one-off job, so large sitemap imports do not depend on the web request staying alive. The job table is created automatically in Postgres. `SITEMAP_FETCH_BATCH_SIZE` limits each run to that many sitemap files and automatically continues from the next batch on the following run; set it to `0` only when you intentionally want one job to fetch every sitemap source. By default, sitemap fetch jobs do not run priority recalculation or the inspection scheduler after fetching, which keeps imports from being blocked by post-fetch work. Set `SITEMAP_FETCH_RECALCULATE_PRIORITIES=true` or `SITEMAP_FETCH_RUN_SCHEDULER=true` only when you intentionally want those steps coupled to sitemap fetching.
 
-For production stability, keep Render app and worker pool env vars conservative and raise the Supabase session pooler capacity instead. In Supabase Connection Pooling, set `pool_size` to `30`. After large imports or deploys, manually restart the Render web service, wait for any one-off CSV/sitemap jobs to finish, then run **Settings -> Sync Cache**. Dashboard reads stay cache-first; if `/api/urls`, `/api/scaled`, `/api/overview`, or `/api/settings` reports that cache is unavailable, run the sync-cache action instead of enabling the heavy `app_state` fallback.
+For production stability on Supabase Pro, keep worker pools at `1`, let the web service use a small shared read pool (`DATABASE_LITE_POOL_MAX=4`), and raise the Supabase session pooler capacity instead of opening many app-side connections. In Supabase Connection Pooling, set `pool_size` to `30` as the baseline. If production traffic still reports `EMAXCONNSESSION`, increase Supabase compute/pooler capacity first, then consider raising the web pool gradually to `6`; do not set a global `DATABASE_POOL_MAX` unless you intentionally want to override every process. After large imports or deploys, manually restart the Render web service, wait for any one-off CSV/sitemap jobs to finish, then run **Settings -> Sync Cache**. Dashboard reads stay cache-first and return stale/degraded JSON before the browser timeout when the database is busy.
 
 If Supabase shows connection pressure, inspect first:
 

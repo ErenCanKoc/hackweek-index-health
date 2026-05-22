@@ -15,10 +15,8 @@ services:
         value: en-US
       - key: APP_STATE_KEY
         value: production
-      - key: DATABASE_POOL_MAX
-        value: 1
       - key: DATABASE_LITE_POOL_MAX
-        value: 1
+        value: 4
       - key: DATABASE_STORE_POOL_MAX
         value: 1
       - key: DATABASE_CACHE_POOL_MAX
@@ -30,7 +28,11 @@ services:
       - key: DATABASE_LOCK_POOL_MAX
         value: 1
       - key: DATABASE_CONNECTION_TIMEOUT_MS
-        value: 30000
+        value: 2500
+      - key: DATABASE_QUERY_TIMEOUT_MS
+        value: 8000
+      - key: LITE_READ_TIMEOUT_MS
+        value: 2500
       - key: APP_BASE_URL
         sync: false
       - key: ADMIN_PASSWORD
