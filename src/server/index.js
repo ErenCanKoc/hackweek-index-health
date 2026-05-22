@@ -911,6 +911,75 @@ async function degradedSettings(origin, error) {
   };
 }
 
+function degradedUrlDetail(id, error) {
+  return {
+    url: {
+      id: Number(id),
+      normalizedUrl: `URL #${id}`,
+      url: `URL #${id}`,
+      category: 'unknown',
+      locale: 'default',
+      currentIndexState: 'unknown',
+      currentHealthState: 'unknown'
+    },
+    sources: [],
+    prioritySnapshots: [],
+    inspections: [],
+    transitions: [],
+    jobs: [],
+    technicalChecks: [],
+    alerts: [],
+    health: null,
+    propertyResolution: { selectedPropertyUrl: 'unavailable while database is busy', candidates: [] },
+    lite: true,
+    degraded: true,
+    retryable: true,
+    warning: 'Database is busy; URL details are temporarily unavailable.',
+    details: error.message
+  };
+}
+
+function degradedJobDiagnostics(error) {
+  return {
+    summary: {
+      total: 0,
+      pending: 0,
+      duePending: 0,
+      running: 0,
+      completed: 0,
+      skipped: 0,
+      failed: 0
+    },
+    byStatus: [],
+    byReason: [],
+    byError: [],
+    recentProblemJobs: [],
+    lite: true,
+    degraded: true,
+    retryable: true,
+    warning: 'Database is busy; job diagnostics are temporarily unavailable.',
+    details: error.message
+  };
+}
+
+function emergencyLiteApiPayload(pathname, parsed, error) {
+  if (!isDatabaseBusyError(error)) return null;
+  const detailMatch = pathname.match(/^\/api\/urls\/(\d+)$/);
+  if (detailMatch) return degradedUrlDetail(Number(detailMatch[1]), error);
+  if (pathname === '/api/overview') return degradedOverview(error);
+  if (pathname === '/api/scaled') return degradedScaledDashboard(error);
+  if (pathname === '/api/settings') return null;
+  if (pathname === '/api/urls') return degradedUrlPage(Object.fromEntries(parsed.searchParams.entries()), error);
+  if (pathname === '/api/jobs' || pathname === '/api/alerts' || pathname === '/api/properties' || pathname === '/api/sitemaps') {
+    return [];
+  }
+  if (pathname === '/api/job-diagnostics') return degradedJobDiagnostics(error);
+  if (pathname === '/api/csv-import-jobs') return { ok: true, jobs: [], lite: true, degraded: true, retryable: true, details: error.message };
+  if (pathname === '/api/actions/csv-import/status') return { ok: true, job: null, lite: true, degraded: true, retryable: true, details: error.message };
+  if (pathname === '/api/actions/fetch-sitemaps/status') return { ok: true, sitemapFetch: { status: 'unavailable' }, job: null, lite: true, degraded: true, retryable: true, details: error.message };
+  return null;
+}
+
 function nextDueForLitePriority(priorityTier) {
   if (priorityTier === 'Excluded') return null;
   const days = { P0: 1, P1: 7, P2: 15, P3: 30 }[priorityTier] ?? 30;
@@ -1945,7 +2014,12 @@ async function handleLiteApi(pathname, parsed, request, response) {
   }
 
   if (detailMatch && request.method === 'GET') {
-    const detail = await readWithLiteStaleCache(`url-detail:${detailMatch[1]}`, () => readLiteUrlDetail(Number(detailMatch[1])));
+    const urlId = Number(detailMatch[1]);
+    const detail = await readWithLiteStaleCache(
+      `url-detail:${detailMatch[1]}`,
+      () => readLiteUrlDetail(urlId),
+      (error) => degradedUrlDetail(urlId, error)
+    );
     if (!detail) {
       sendJson(response, 404, { error: 'URL not found' });
       return true;
@@ -1969,47 +2043,57 @@ async function handleLiteApi(pathname, parsed, request, response) {
   }
 
   if (pathname === '/api/jobs') {
-    sendJson(response, 200, await readAppStateArray('inspectionJobs', { limit: 200, reverse: true }));
+    sendJson(response, 200, await readWithLiteStaleCache(
+      'jobs',
+      () => readAppStateArray('inspectionJobs', { limit: 200, reverse: true }),
+      () => []
+    ));
     return true;
   }
 
   if (pathname === '/api/job-diagnostics') {
-    const jobs = await readAppStateArray('inspectionJobs');
-    sendJson(response, 200, {
-      summary: {
-        total: jobs.length,
-        pending: jobs.filter((job) => job.status === 'pending').length,
-        duePending: jobs.filter((job) => job.status === 'pending' && new Date(job.dueAt) <= new Date()).length,
-        running: jobs.filter((job) => job.status === 'running').length,
-        completed: jobs.filter((job) => job.status === 'completed').length,
-        skipped: jobs.filter((job) => job.status === 'skipped').length,
-        failed: jobs.filter((job) => job.status === 'failed').length
-      },
-      byStatus: [],
-      byReason: [],
-      byError: [],
-      recentProblemJobs: []
-    });
+    const payload = await readWithLiteStaleCache('job-diagnostics', async () => {
+      const jobs = await readAppStateArray('inspectionJobs');
+      return {
+        summary: {
+          total: jobs.length,
+          pending: jobs.filter((job) => job.status === 'pending').length,
+          duePending: jobs.filter((job) => job.status === 'pending' && new Date(job.dueAt) <= new Date()).length,
+          running: jobs.filter((job) => job.status === 'running').length,
+          completed: jobs.filter((job) => job.status === 'completed').length,
+          skipped: jobs.filter((job) => job.status === 'skipped').length,
+          failed: jobs.filter((job) => job.status === 'failed').length
+        },
+        byStatus: [],
+        byReason: [],
+        byError: [],
+        recentProblemJobs: []
+      };
+    }, degradedJobDiagnostics);
+    sendJson(response, 200, payload);
     return true;
   }
 
   if (pathname === '/api/alerts') {
-    sendJson(response, 200, await readAppStateArray('alerts', { limit: 200, reverse: true }));
+    sendJson(response, 200, await readWithLiteStaleCache(
+      'alerts',
+      () => readAppStateArray('alerts', { limit: 200, reverse: true }),
+      () => []
+    ));
     return true;
   }
 
   if (pathname === '/api/properties') {
-    try {
-      sendJson(response, 200, await readWithLiteStaleCache('properties', () => readCachedProperties()));
-    } catch (error) {
-      console.error('Cached properties failed, falling back to app_state JSONB:', error.message);
-      sendJson(response, 200, await readAppStateArray('properties'));
-    }
+    sendJson(response, 200, await readWithLiteStaleCache('properties', () => readCachedProperties(), () => []));
     return true;
   }
 
   if (pathname === '/api/sitemaps') {
-    const sitemaps = await readAppStateArray('sitemaps', { limit: 300, reverse: true });
+    const sitemaps = await readWithLiteStaleCache(
+      'sitemaps',
+      () => readAppStateArray('sitemaps', { limit: 300, reverse: true }),
+      () => []
+    );
     sendJson(response, 200, sitemaps.map((sitemap) => {
       const status = sitemap.lastFetchStatus ?? 'not_fetched';
       const ok = status === 'success' || Boolean(sitemap.lastSuccessfulFetchAt) || Number(sitemap.urlCount ?? 0) > 0;
@@ -2065,7 +2149,12 @@ async function handleLiteApi(pathname, parsed, request, response) {
     await recoverStaleCsvImportJobs().catch((error) => {
       console.error('Failed to recover stale CSV import jobs:', error.message);
     });
-    sendJson(response, 200, { ok: true, jobs: await listCsvImportJobs(Number(parsed.searchParams.get('limit') ?? 10)) });
+    const jobs = await readWithLiteStaleCache(
+      `csv-import-jobs:${parsed.searchParams.get('limit') ?? 10}`,
+      () => listCsvImportJobs(Number(parsed.searchParams.get('limit') ?? 10)),
+      () => []
+    );
+    sendJson(response, 200, { ok: true, jobs, lite: true });
     return true;
   }
 
@@ -2074,8 +2163,12 @@ async function handleLiteApi(pathname, parsed, request, response) {
       console.error('Failed to recover stale CSV import jobs:', error.message);
     });
     const jobId = parsed.searchParams.get('jobId');
-    const job = jobId ? await getCsvImportJob(jobId) : (await listCsvImportJobs(1))[0] ?? null;
-    sendJson(response, 200, { ok: true, job });
+    const job = await readWithLiteStaleCache(
+      `csv-import-status:${jobId ?? 'latest'}`,
+      async () => (jobId ? await getCsvImportJob(jobId) : (await listCsvImportJobs(1))[0] ?? null),
+      () => null
+    );
+    sendJson(response, 200, { ok: true, job, lite: true });
     return true;
   }
 
@@ -3573,6 +3666,11 @@ const server = http.createServer(async (request, response) => {
         if (handledLite) return;
       } catch (error) {
         console.error('Lite API fallback failed:', error);
+        const emergencyPayload = request.method === 'GET' ? emergencyLiteApiPayload(pathname, parsed, error) : null;
+        if (emergencyPayload) {
+          sendJson(response, 200, emergencyPayload);
+          return;
+        }
         sendJson(response, apiErrorStatus(error, 502), apiErrorPayload(error, {
           error: isDatabaseBusyError(error) ? 'Database is busy; retry shortly.' : `Lite API failed for ${pathname}: ${error.message}`,
           path: pathname,
