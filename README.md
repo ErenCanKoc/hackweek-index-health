@@ -100,10 +100,43 @@ SITEMAP_FETCH_CONCURRENCY=4
 SITEMAP_FETCH_BATCH_SIZE=50
 SITEMAP_FETCH_RECALCULATE_PRIORITIES=false
 SITEMAP_FETCH_RUN_SCHEDULER=false
+DATABASE_POOL_MAX=1
+DATABASE_LITE_POOL_MAX=1
+DATABASE_STORE_POOL_MAX=1
+DATABASE_CACHE_POOL_MAX=1
+DATABASE_CSV_JOB_POOL_MAX=1
+DATABASE_SITEMAP_JOB_POOL_MAX=1
+DATABASE_LOCK_POOL_MAX=1
+DATABASE_CONNECTION_TIMEOUT_MS=30000
+ENABLE_APP_STATE_URL_FALLBACK=false
 ```
 
 `ADMIN_PASSWORD` enables the built-in dashboard login. Without it, the app remains open for local development.
 `RENDER_API_KEY` and `RENDER_SERVICE_ID` let the dashboard start sitemap fetching as a Render one-off job, so large sitemap imports do not depend on the web request staying alive. The job table is created automatically in Postgres. `SITEMAP_FETCH_BATCH_SIZE` limits each run to that many sitemap files and automatically continues from the next batch on the following run; set it to `0` only when you intentionally want one job to fetch every sitemap source. By default, sitemap fetch jobs do not run priority recalculation or the inspection scheduler after fetching, which keeps imports from being blocked by post-fetch work. Set `SITEMAP_FETCH_RECALCULATE_PRIORITIES=true` or `SITEMAP_FETCH_RUN_SCHEDULER=true` only when you intentionally want those steps coupled to sitemap fetching.
+
+For production stability, keep Render app and worker pool env vars conservative and raise the Supabase session pooler capacity instead. In Supabase Connection Pooling, set `pool_size` to `30`. After large imports or deploys, manually restart the Render web service, wait for any one-off CSV/sitemap jobs to finish, then run **Settings -> Sync Cache**. Dashboard reads stay cache-first; if `/api/urls`, `/api/scaled`, `/api/overview`, or `/api/settings` reports that cache is unavailable, run the sync-cache action instead of enabling the heavy `app_state` fallback.
+
+If Supabase shows connection pressure, inspect first:
+
+```sql
+select pid, usename, state, application_name, backend_start, query_start
+from pg_stat_activity
+where datname = current_database()
+order by query_start nulls last;
+```
+
+Do not terminate internal Supabase roles such as `authenticator`, `postgres`, `pgbouncer`, `supabase_admin`, `supabase_storage_admin`, `Supavisor`, `postgrest`, `postgres_exporter`, `pg_cron scheduler`, or `pg_net`. Only idle sessions owned by the app database user should be considered:
+
+```sql
+select pg_terminate_backend(pid)
+from pg_stat_activity
+where datname = current_database()
+  and pid <> pg_backend_pid()
+  and usename = '<app database user>'
+  and state in ('idle', 'idle in transaction');
+```
+
+Render one-off job logs saying `No queued or running CSV import job was found.` are normal when there is no active CSV import to resume. Upload the CSV again only after Settings shows no queued/running CSV job and the expected import is not present.
 
 8. In Google Cloud OAuth Client, add:
 

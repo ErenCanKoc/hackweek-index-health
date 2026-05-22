@@ -110,6 +110,34 @@ function numberOption(value, fallback) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function isDatabaseBusyError(error) {
+  const message = String(error?.message ?? '');
+  return error?.code === 'EDATABASEBUSY'
+    || isConnectionCapacityError(error)
+    || message.includes('timeout exceeded when trying to connect')
+    || message.includes('Connection terminated due to connection timeout');
+}
+
+function apiErrorStatus(error, fallback = 500) {
+  return isDatabaseBusyError(error) ? 503 : fallback;
+}
+
+function apiErrorPayload(error, extra = {}) {
+  if (isDatabaseBusyError(error)) {
+    return {
+      error: 'Database is busy; retry shortly.',
+      details: error.message,
+      retryable: true,
+      ...extra
+    };
+  }
+  return {
+    error: error.message,
+    ...(process.env.NODE_ENV === 'production' ? {} : { stack: error.stack }),
+    ...extra
+  };
+}
+
 function csvImportHttpWorkerOptions(body, parsed) {
   const maxRuntimeCapMs = numberOption(process.env.CSV_IMPORT_HTTP_MAX_RUNTIME_CAP_MS, 25000);
   const defaultMaxRuntimeMs = Math.min(
@@ -1487,13 +1515,14 @@ async function deleteFetchedSitemapsInPostgresState(sitemapUrls) {
 function liteScaledDashboardFromArrays(urls, alerts) {
   const tabLimit = 200;
   const scaled = urls.filter((url) => url.isScaledContent && !url.isManuallyExcluded);
+  const isAdcraftScaledUrl = (url) => !url.scaledContentType || url.scaledContentType === 'adcraft';
   const indexedWithinDays = (days) => scaled.filter((url) => (
     url.firstIndexedAt && (new Date(url.firstIndexedAt) - new Date(url.firstSeenAt)) <= days * 86400000
   )).length;
 
   return {
     tabs: {
-      adcraft: scaled.filter((url) => url.scaledContentType === 'adcraft').slice(0, tabLimit),
+      adcraft: scaled.filter(isAdcraftScaledUrl).slice(0, tabLimit),
       delayedIndexing: scaled.filter((url) => ['discovered_not_indexed', 'not_indexed'].includes(url.currentIndexState)).slice(0, tabLimit),
       indexLost: scaled.filter((url) => ['index_loss_suspected', 'index_lost_confirmed'].includes(url.currentIndexState)).slice(0, tabLimit),
       stableIndexed: scaled.filter((url) => url.currentIndexState === 'stable_indexed').slice(0, tabLimit),
@@ -3154,12 +3183,12 @@ const server = http.createServer(async (request, response) => {
         if (handledLite) return;
       } catch (error) {
         console.error('Lite API fallback failed:', error);
-        sendJson(response, 502, {
-          error: `Lite API failed for ${pathname}: ${error.message}`,
+        sendJson(response, apiErrorStatus(error, 502), apiErrorPayload(error, {
+          error: isDatabaseBusyError(error) ? 'Database is busy; retry shortly.' : `Lite API failed for ${pathname}: ${error.message}`,
           path: pathname,
           lite: true,
           contextLoad: contextLoadInfo
-        });
+        }));
         return;
       }
     }
@@ -3784,7 +3813,7 @@ const server = http.createServer(async (request, response) => {
 
     sendJson(response, 404, { error: 'Not found' });
   } catch (error) {
-    sendJson(response, 500, { error: error.message, stack: error.stack });
+    sendJson(response, apiErrorStatus(error), apiErrorPayload(error));
   }
 });
 

@@ -4,7 +4,7 @@ import { loadConfig } from '../src/core/config.js';
 import { ingestAllConfiguredSources, ingestBusinessWideCsvText, ingestGscCsvText } from '../src/core/ingestion.js';
 import { ensureProperties, resolveEligibleProperties } from '../src/core/propertyResolver.js';
 import { recalculatePriorities } from '../src/core/priority.js';
-import { jobDiagnostics, sitemapFetchLog, urlDetail } from '../src/core/reporting.js';
+import { jobDiagnostics, scaledDashboard, sitemapFetchLog, urlDetail } from '../src/core/reporting.js';
 import { runScheduler } from '../src/core/scheduler.js';
 import { expandSitemapSources } from '../src/core/sitemap.js';
 import { Store } from '../src/core/store.js';
@@ -82,6 +82,13 @@ assert.ok(
   store.state.urlSources.some((source) => source.urlId === scaled.id && source.sourceSitemapUrl?.includes('adcraft')),
   'expected scaled content URL to inherit adcraft from source sitemap'
 );
+const originalScaledContentType = scaled.scaledContentType;
+scaled.scaledContentType = null;
+assert.ok(
+  scaledDashboard(store).tabs.adcraft.some((url) => url.id === scaled.id),
+  'expected scaled content URL with missing type to stay visible in Adcraft tab'
+);
+scaled.scaledContentType = originalScaledContentType;
 const eligible = resolveEligibleProperties(store, scaled);
 assert.equal(eligible[0].propertyUrl, 'https://www.jotform.com/form-templates/');
 
@@ -97,6 +104,7 @@ assert.equal(sitemapLog.length > 0, true);
 assert.equal(sitemapLog.some((row) => row.urlCount > 0), true);
 const detail = urlDetail(store, store.state.urls[0].id);
 assert.ok(detail.inspections[0].property?.propertyUrl, 'expected URL detail inspections to include property metadata');
+assert.ok(detail.inspections[0].rawJson?.inspectionResult, 'expected URL detail inspections to preserve raw inspection JSON');
 const diagnostics = jobDiagnostics(store);
 assert.equal(diagnostics.summary.completed, summary.inspected);
 assert.equal(diagnostics.byStatus.some((row) => row.name === 'completed'), true);

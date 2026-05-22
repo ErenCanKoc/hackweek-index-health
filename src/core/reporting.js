@@ -144,6 +144,7 @@ export function urlDetail(store, id) {
 export function scaledDashboard(store) {
   const tabLimit = 200;
   const scaled = store.state.urls.filter((url) => url.isScaledContent && !url.isManuallyExcluded);
+  const isAdcraftScaledUrl = (url) => !url.scaledContentType || url.scaledContentType === 'adcraft';
   const today = dateKey();
   const daysToIndex = scaled
     .filter((url) => url.firstSeenAt && url.firstIndexedAt)
@@ -169,7 +170,7 @@ export function scaledDashboard(store) {
 
   return {
     tabs: {
-      adcraft: scaled.filter((url) => url.scaledContentType === 'adcraft').slice(0, tabLimit),
+      adcraft: scaled.filter(isAdcraftScaledUrl).slice(0, tabLimit),
       delayedIndexing: scaled.filter((url) => ['discovered_not_indexed', 'not_indexed'].includes(url.currentIndexState)).slice(0, tabLimit),
       indexLost: scaled.filter((url) => ['index_loss_suspected', 'index_lost_confirmed'].includes(url.currentIndexState)).slice(0, tabLimit),
       stableIndexed: scaled.filter((url) => url.currentIndexState === 'stable_indexed').slice(0, tabLimit),
