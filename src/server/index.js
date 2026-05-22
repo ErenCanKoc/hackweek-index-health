@@ -1942,6 +1942,12 @@ async function handleLiteApi(pathname, parsed, request, response) {
     return true;
   }
 
+  if (pathname === '/api/settings/inspection' && request.method === 'POST') {
+    const result = await saveInspectionPolicy(await readBody(request));
+    sendJson(response, result.status, { ...result.payload, lite: true });
+    return true;
+  }
+
   if (pathname === '/api/csv-import-jobs') {
     await recoverStaleCsvImportJobs().catch((error) => {
       console.error('Failed to recover stale CSV import jobs:', error.message);
@@ -2292,6 +2298,18 @@ async function loadEffectiveConfigForSettings() {
   }
   const store = await loadStore();
   return withStoredSources(await loadConfig(), store);
+}
+
+async function saveInspectionPolicy(body) {
+  const policy = await readJson('config/policy.json');
+  if (!['mock', 'gsc'].includes(body.provider)) {
+    return { status: 400, payload: { error: 'provider must be mock or gsc' } };
+  }
+  policy.inspection.provider = body.provider;
+  if (body.languageCode) policy.inspection.languageCode = body.languageCode;
+  await writeJson('config/policy.json', policy);
+  await reloadRuntimeConfig();
+  return { status: 200, payload: { ok: true, inspection: policy.inspection } };
 }
 
 async function saveRuntimeSources(sources) {
@@ -3682,17 +3700,8 @@ const server = http.createServer(async (request, response) => {
     }
 
     if (pathname === '/api/settings/inspection' && request.method === 'POST') {
-      const body = await readBody(request);
-      const policy = await readJson('config/policy.json');
-      if (!['mock', 'gsc'].includes(body.provider)) {
-        sendJson(response, 400, { error: 'provider must be mock or gsc' });
-        return;
-      }
-      policy.inspection.provider = body.provider;
-      if (body.languageCode) policy.inspection.languageCode = body.languageCode;
-      await writeJson('config/policy.json', policy);
-      await reloadRuntimeConfig();
-      sendJson(response, 200, { ok: true, inspection: policy.inspection });
+      const result = await saveInspectionPolicy(await readBody(request));
+      sendJson(response, result.status, result.payload);
       return;
     }
 

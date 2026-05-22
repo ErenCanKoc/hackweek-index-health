@@ -1233,15 +1233,22 @@ document.addEventListener('keydown', (event) => {
 });
 
 document.querySelector('#save-inspection-provider').addEventListener('click', async () => {
-  setStatus('Saving inspection provider...');
-  await api('/api/settings/inspection', {
-    method: 'POST',
-    body: JSON.stringify({
-      provider: document.querySelector('#inspection-provider').value,
-      languageCode: document.querySelector('#inspection-language').value
-    })
-  });
-  await refresh();
+  try {
+    setStatus('Saving inspection provider...');
+    const result = await api('/api/settings/inspection', {
+      method: 'POST',
+      timeoutMs: 10000,
+      body: JSON.stringify({
+        provider: document.querySelector('#inspection-provider').value,
+        languageCode: document.querySelector('#inspection-language').value
+      })
+    });
+    document.querySelector('#inspection-provider').value = result.inspection?.provider ?? document.querySelector('#inspection-provider').value;
+    document.querySelector('#inspection-language').value = result.inspection?.languageCode ?? document.querySelector('#inspection-language').value;
+    setStatus('Inspection provider saved.');
+  } catch (error) {
+    setStatus(`Save failed: ${error.message}`);
+  }
 });
 
 document.querySelector('#save-sources').addEventListener('click', async () => {
