@@ -115,7 +115,10 @@ function isDatabaseBusyError(error) {
   return error?.code === 'EDATABASEBUSY'
     || isConnectionCapacityError(error)
     || message.includes('timeout exceeded when trying to connect')
-    || message.includes('Connection terminated due to connection timeout');
+    || message.includes('Connection terminated due to connection timeout')
+    || message.includes('the database system is not accepting connections')
+    || message.includes('database system is starting up')
+    || message.includes('database system is shutting down');
 }
 
 function apiErrorStatus(error, fallback = 500) {

@@ -45,7 +45,10 @@ function isRetryableDatabaseError(error) {
     || error?.code === 'XX000'
     || message.includes('connection to database closed')
     || message.includes('Connection terminated')
-    || message.includes('timeout exceeded');
+    || message.includes('timeout exceeded')
+    || message.includes('the database system is not accepting connections')
+    || message.includes('database system is starting up')
+    || message.includes('database system is shutting down');
 }
 
 async function withDatabaseRetry(operation, label) {
